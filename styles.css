@@ -1,0 +1,90 @@
+/* Git Sync Plugin Styles */
+
+/* Status Bar */
+.git-sync-status-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+}
+
+.git-sync-status-bar:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+.git-sync-icon {
+    font-size: 14px;
+    line-height: 1;
+}
+
+.git-sync-text {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+/* 状态颜色 */
+.git-sync-status-bar.synced .git-sync-icon {
+    color: var(--text-success);
+}
+
+.git-sync-status-bar.syncing .git-sync-icon {
+    color: var(--text-muted);
+}
+
+.git-sync-status-bar.pending .git-sync-icon {
+    color: var(--text-warning);
+}
+
+.git-sync-status-bar.error .git-sync-icon {
+    color: var(--text-error);
+}
+
+.git-sync-status-bar.conflict .git-sync-icon {
+    color: var(--text-error);
+}
+
+.git-sync-status-bar.offline .git-sync-icon {
+    color: var(--text-faint);
+}
+
+/* 同步动画 */
+.git-sync-icon-spin {
+    animation: git-sync-spin 1s linear infinite;
+}
+
+@keyframes git-sync-spin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* File Status Indicator */
+.git-sync-file-status {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    margin-left: 4px;
+}
+
+.git-sync-file-status.synced {
+    background-color: var(--text-success);
+}
+
+.git-sync-file-status.pending {
+    background-color: var(--text-warning);
+}
+
+.git-sync-file-status.conflict {
+    background-color: var(--text-error);
+}
+
+.git-sync-file-status.excluded {
+    background-color: var(--text-faint);
+}

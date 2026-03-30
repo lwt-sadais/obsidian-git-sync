@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-git-sync",
+  "name": "Git Sync",
+  "version": "0.1.0",
+  "minAppVersion": "0.15.0",
+  "description": "Sync your Obsidian vault to a private GitHub repository for free multi-device synchronization.",
+  "author": "lwt-sadais",
+  "authorUrl": "https://github.com/lwt-sadais",
+  "isDesktopOnly": false
+}
