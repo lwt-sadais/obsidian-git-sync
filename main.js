@@ -5099,10 +5099,7 @@ var SyncEngine = class {
           if (this.shouldExcludeFile(localFile.path)) {
             continue;
           }
-          const fileName = localFile.basename;
-          if (tempFileNames.some(
-            (tempName) => fileName === tempName || fileName.startsWith(tempName + "-")
-          )) {
+          if (isTempFileName(localFile.basename)) {
             continue;
           }
           if (!remoteFileMap.has(localFile.path)) {

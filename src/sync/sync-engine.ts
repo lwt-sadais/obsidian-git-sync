@@ -631,10 +631,7 @@ export class SyncEngine {
                     }
 
                     // 跳过临时文件名
-                    const fileName = localFile.basename;
-                    if (tempFileNames.some(tempName =>
-                        fileName === tempName || fileName.startsWith(tempName + '-')
-                    )) {
+                    if (isTempFileName(localFile.basename)) {
                         continue;
                     }
 
