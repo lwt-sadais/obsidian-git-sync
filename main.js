@@ -138,7 +138,7 @@ __export(main_exports, {
   default: () => GitSyncPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian4 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // node_modules/universal-user-agent/index.js
 function getUserAgent() {
@@ -3939,9 +3939,10 @@ var GitHubClient = class {
       return [];
     }
   }
-  // 上传/更新文件
-  async uploadFile(options) {
+  // 上传/更新文件（带重试机制处理 409 冲突）
+  async uploadFile(options, retryCount = 0) {
     if (!this.octokit) return null;
+    const maxRetries = 2;
     try {
       const params = {
         owner: options.owner,
@@ -3960,6 +3961,16 @@ var GitHubClient = class {
         path: data.content.path
       };
     } catch (error) {
+      if (error.status === 409 && retryCount < maxRetries) {
+        console.log(`SHA conflict for ${options.path}, retrying (${retryCount + 1}/${maxRetries})...`);
+        const existingFile = await this.getFile({
+          owner: options.owner,
+          repo: options.repo,
+          path: options.path
+        });
+        const newOptions = { ...options, sha: existingFile == null ? void 0 : existingFile.sha };
+        return this.uploadFile(newOptions, retryCount + 1);
+      }
       console.error("Failed to upload file:", error);
       return null;
     }
@@ -3982,24 +3993,52 @@ var GitHubClient = class {
       return false;
     }
   }
-  // 递归获取仓库所有文件
-  async getAllFiles(owner, repo, path = "") {
-    if (!this.octokit) return [];
-    const files = [];
+  // 获取仓库默认分支
+  async getDefaultBranch(owner, repo) {
+    if (!this.octokit) return "main";
     try {
-      const items = await this.getDirectory({ owner, repo, path });
-      for (const item of items) {
-        if (item.type === "file") {
-          files.push(item);
-        } else if (item.type === "dir") {
-          const subFiles = await this.getAllFiles(owner, repo, item.path);
-          files.push(...subFiles);
-        }
-      }
+      const { data } = await this.octokit.repos.get({ owner, repo });
+      return data.default_branch || "main";
+    } catch (error) {
+      console.error("Failed to get default branch:", error);
+      return "main";
+    }
+  }
+  // 获取仓库所有文件（使用 Git Tree API，一次请求获取所有文件）
+  async getAllFiles(owner, repo) {
+    if (!this.octokit) return [];
+    try {
+      const defaultBranch = await this.getDefaultBranch(owner, repo);
+      const { data: refData } = await this.octokit.git.getRef({
+        owner,
+        repo,
+        ref: `heads/${defaultBranch}`
+      });
+      const { data: treeData } = await this.octokit.git.getTree({
+        owner,
+        repo,
+        tree_sha: refData.object.sha,
+        recursive: "true"
+      });
+      const files = treeData.tree.filter((item) => item.type === "blob").map((item) => {
+        var _a;
+        return {
+          name: ((_a = item.path) == null ? void 0 : _a.split("/").pop()) || "",
+          path: item.path || "",
+          sha: item.sha || "",
+          size: item.size || 0,
+          url: item.url || "",
+          html_url: "",
+          git_url: item.url || "",
+          download_url: "",
+          type: "file"
+        };
+      });
+      return files;
     } catch (error) {
       console.error("Failed to get all files:", error);
+      return [];
     }
-    return files;
   }
   // 获取 Token
   getToken() {
@@ -4163,6 +4202,33 @@ var translations = {
     deletedFromRemote: "\u5DF2\u4ECE\u8FDC\u7A0B\u5220\u9664\uFF1A{path}",
     conflictDetected: "\u68C0\u6D4B\u5230\u51B2\u7A81\uFF1A{path}",
     conflictsPaused: "\u540C\u6B65\u6682\u505C\uFF1A\u68C0\u6D4B\u5230 {count} \u4E2A\u51B2\u7A81",
+    // 冲突解决
+    conflictResolutionTitle: "\u51B2\u7A81\u89E3\u51B3",
+    conflictResolutionDesc: "\u68C0\u6D4B\u5230 {count} \u4E2A\u6587\u4EF6\u5B58\u5728\u51B2\u7A81\uFF0C\u8BF7\u9009\u62E9\u89E3\u51B3\u65B9\u6848",
+    conflictKeepLocal: "\u4FDD\u7559\u672C\u5730\u7248\u672C",
+    conflictKeepLocalDesc: "\u4F7F\u7528\u672C\u5730\u6587\u4EF6\uFF0C\u5FFD\u7565\u8FDC\u7A0B\u66F4\u6539",
+    conflictUseRemote: "\u4F7F\u7528\u8FDC\u7A0B\u7248\u672C",
+    conflictUseRemoteDesc: "\u7528\u8FDC\u7A0B\u6587\u4EF6\u8986\u76D6\u672C\u5730",
+    conflictKeepBoth: "\u4FDD\u7559\u4E24\u8005",
+    conflictKeepBothDesc: "\u672C\u5730\u4FDD\u7559\uFF0C\u8FDC\u7A0B\u7248\u672C\u53E6\u5B58\u4E3A\u526F\u672C",
+    conflictSmartMerge: "\u667A\u80FD\u5408\u5E76",
+    conflictSmartMergeDesc: "\u5C1D\u8BD5\u81EA\u52A8\u5408\u5E76\u66F4\u6539",
+    conflictViewDiff: "\u67E5\u770B\u5DEE\u5F02",
+    conflictBinaryFile: "\u4E8C\u8FDB\u5236\u6587\u4EF6",
+    conflictBinaryNoMerge: "\u4E8C\u8FDB\u5236\u6587\u4EF6\u65E0\u6CD5\u667A\u80FD\u5408\u5E76",
+    conflictBinaryNoDiff: "\u4E8C\u8FDB\u5236\u6587\u4EF6\u65E0\u6CD5\u663E\u793A\u5DEE\u5F02",
+    applyResolutions: "\u5E94\u7528\u6240\u9009\u64CD\u4F5C",
+    conflictResolvedCount: "\u5DF2\u89E3\u51B3 {success} \u4E2A\u51B2\u7A81\uFF0C\u5931\u8D25 {failed} \u4E2A",
+    conflictResolvedKeepLocal: "\u5DF2\u4FDD\u7559\u672C\u5730\u7248\u672C\uFF1A{path}",
+    conflictResolvedUseRemote: "\u5DF2\u4F7F\u7528\u8FDC\u7A0B\u7248\u672C\uFF1A{path}",
+    conflictResolvedKeepBoth: "\u5DF2\u4FDD\u7559\u4E24\u8005\uFF1A{path}\uFF0C\u526F\u672C\uFF1A{conflictPath}",
+    conflictMerged: "\u5DF2\u81EA\u52A8\u5408\u5E76\uFF1A{path}",
+    conflictMergedWithBlocks: "\u5408\u5E76\u5B8C\u6210\uFF0C\u5B58\u5728\u51B2\u7A81\u5757\u9700\u624B\u52A8\u5904\u7406\uFF1A{path}",
+    conflictResolveFailed: "\u89E3\u51B3\u51B2\u7A81\u5931\u8D25\uFF1A{path}",
+    conflictDiffTitle: "\u5185\u5BB9\u5DEE\u5F02",
+    conflictLocalVersion: "\u672C\u5730\u7248\u672C",
+    conflictRemoteVersion: "\u8FDC\u7A0B\u7248\u672C",
+    close: "\u5173\u95ED",
     // 仓库模态框
     createRepoTitle: "\u521B\u5EFA\u65B0\u4ED3\u5E93",
     repoName: "\u4ED3\u5E93\u540D\u79F0",
@@ -4254,6 +4320,33 @@ var translations = {
     deletedFromRemote: "Deleted from remote: {path}",
     conflictDetected: "Conflict detected: {path}",
     conflictsPaused: "Sync paused: {count} conflicts detected",
+    // Conflict resolution
+    conflictResolutionTitle: "Conflict Resolution",
+    conflictResolutionDesc: "{count} files have conflicts. Please choose how to resolve them.",
+    conflictKeepLocal: "Keep local version",
+    conflictKeepLocalDesc: "Use local file, ignore remote changes",
+    conflictUseRemote: "Use remote version",
+    conflictUseRemoteDesc: "Overwrite local with remote file",
+    conflictKeepBoth: "Keep both",
+    conflictKeepBothDesc: "Keep local, save remote as a copy",
+    conflictSmartMerge: "Smart merge",
+    conflictSmartMergeDesc: "Try to automatically merge changes",
+    conflictViewDiff: "View diff",
+    conflictBinaryFile: "Binary file",
+    conflictBinaryNoMerge: "Cannot smart merge binary files",
+    conflictBinaryNoDiff: "Cannot show diff for binary files",
+    applyResolutions: "Apply selected actions",
+    conflictResolvedCount: "Resolved {success} conflicts, failed {failed}",
+    conflictResolvedKeepLocal: "Kept local version: {path}",
+    conflictResolvedUseRemote: "Used remote version: {path}",
+    conflictResolvedKeepBoth: "Kept both: {path}, copy: {conflictPath}",
+    conflictMerged: "Auto merged: {path}",
+    conflictMergedWithBlocks: "Merged with conflict blocks, manual edit needed: {path}",
+    conflictResolveFailed: "Failed to resolve conflict: {path}",
+    conflictDiffTitle: "Content Diff",
+    conflictLocalVersion: "Local Version",
+    conflictRemoteVersion: "Remote Version",
+    close: "Close",
     // Repository Modal
     createRepoTitle: "Create New Repository",
     repoName: "Repository Name",
@@ -4460,6 +4553,15 @@ var RepoManager = class {
 
 // src/sync/sync-engine.ts
 var import_obsidian2 = require("obsidian");
+var TEMP_FILE_NAMES = [
+  "\u672A\u547D\u540D",
+  "Untitled",
+  "Untitled-1",
+  "Untitled-2",
+  "Untitled-3",
+  "New note",
+  "\u65B0\u7B14\u8BB0"
+];
 var SyncEngine = class {
   constructor(plugin) {
     this.client = null;
@@ -4472,6 +4574,7 @@ var SyncEngine = class {
   }
   // 全量同步：上传所有本地文件到 GitHub
   async fullSync() {
+    var _a;
     if (!this.client) {
       return {
         success: false,
@@ -4506,8 +4609,16 @@ var SyncEngine = class {
       deletedFiles: 0,
       errors: []
     };
+    let remoteFileMap = /* @__PURE__ */ new Map();
+    try {
+      const remoteFiles = await this.client.getAllFiles(repoOwner, repoName);
+      for (const file of remoteFiles) {
+        remoteFileMap.set(file.path, { sha: file.sha });
+      }
+    } catch (error) {
+      console.warn("Failed to get remote files, will upload without SHA check:", error);
+    }
     const allFiles = this.getAllFiles();
-    const tempFileNames = ["\u672A\u547D\u540D", "Untitled", "Untitled-1", "Untitled-2", "Untitled-3", "New note", "\u65B0\u7B14\u8BB0"];
     const filteredFiles = allFiles.filter((file) => {
       for (const excludedPath of excludedPaths) {
         if (file.path.startsWith(excludedPath)) {
@@ -4520,9 +4631,8 @@ var SyncEngine = class {
         result.skippedFiles++;
         return false;
       }
-      const fileName = file.basename;
-      if (tempFileNames.some(
-        (tempName) => fileName === tempName || fileName.startsWith(tempName + "-")
+      if (TEMP_FILE_NAMES.some(
+        (tempName) => file.basename === tempName || file.basename.startsWith(tempName + "-")
       )) {
         result.skippedFiles++;
         return false;
@@ -4534,11 +4644,8 @@ var SyncEngine = class {
     let processedFiles = 0;
     for (const file of filteredFiles) {
       processedFiles++;
-      if (processedFiles % 10 === 0 || processedFiles === totalFiles) {
-        new import_obsidian2.Notice(t("syncingFiles", { current: processedFiles, total: totalFiles }));
-        if (this.plugin.statusBar) {
-          this.plugin.statusBar.updateProgress(processedFiles, totalFiles);
-        }
+      if (this.plugin.statusBar) {
+        this.plugin.statusBar.updateProgress(processedFiles, totalFiles, "push");
       }
       if (file.stat.size > sizeLimitBytes) {
         result.skippedFiles++;
@@ -4548,22 +4655,13 @@ var SyncEngine = class {
       try {
         const content = await this.vault.readBinary(file);
         const base64Content = this.arrayBufferToBase64(content);
-        let existingSha = void 0;
-        const existingFile = await this.client.getFile({
-          owner: repoOwner,
-          repo: repoName,
-          path: file.path
-        });
-        if (existingFile) {
-          existingSha = existingFile.sha;
-        }
         const uploadResult = await this.client.uploadFile({
           owner: repoOwner,
           repo: repoName,
           path: file.path,
-          message: existingSha ? `Update ${file.path}` : `Upload ${file.path}`,
+          message: `Upload ${file.path}`,
           content: base64Content,
-          sha: existingSha
+          sha: (_a = remoteFileMap.get(file.path)) == null ? void 0 : _a.sha
         });
         if (uploadResult) {
           result.uploadedFiles++;
@@ -4649,7 +4747,7 @@ var SyncEngine = class {
     return size <= limitBytes;
   }
   // 从远程拉取单个文件
-  async downloadFile(path) {
+  async downloadFile(path, forceOverwrite = false) {
     if (!this.client) {
       console.error("Not authenticated");
       return false;
@@ -4672,17 +4770,19 @@ var SyncEngine = class {
       const content = this.base64ToArrayBuffer(remoteFile.content);
       const localFile = this.vault.getAbstractFileByPath(path);
       if (localFile instanceof import_obsidian2.TFile) {
-        const localModified = new Date(localFile.stat.mtime);
-        const fileState = this.plugin.stateManager.getFileState(path);
-        if (fileState && localModified > new Date(fileState.localModified)) {
-          await this.plugin.stateManager.markFileConflict(path, localModified.toISOString());
-          if (this.plugin.statusBar) {
-            this.plugin.statusBar.setConflictCount(
-              this.plugin.stateManager.getConflictFiles().length
-            );
+        if (!forceOverwrite) {
+          const localModified = new Date(localFile.stat.mtime);
+          const fileState = this.plugin.stateManager.getFileState(path);
+          if (fileState && localModified > new Date(fileState.localModified)) {
+            await this.plugin.stateManager.markFileConflict(path, localModified.toISOString());
+            if (this.plugin.statusBar) {
+              this.plugin.statusBar.setConflictCount(
+                this.plugin.stateManager.getConflictFiles().length
+              );
+            }
+            new import_obsidian2.Notice(t("conflictDetected", { path }));
+            return false;
           }
-          new import_obsidian2.Notice(t("conflictDetected", { path }));
-          return false;
         }
         await this.vault.modifyBinary(localFile, content);
       } else {
@@ -4742,11 +4842,8 @@ var SyncEngine = class {
       let processedFiles = 0;
       for (const remoteFile of remoteFiles) {
         processedFiles++;
-        if (processedFiles % 10 === 0 || processedFiles === totalFiles) {
-          new import_obsidian2.Notice(t("syncingFiles", { current: processedFiles, total: totalFiles }));
-          if (this.plugin.statusBar) {
-            this.plugin.statusBar.updateProgress(processedFiles, totalFiles);
-          }
+        if (this.plugin.statusBar) {
+          this.plugin.statusBar.updateProgress(processedFiles, totalFiles, "pull");
         }
         if (remoteFile.path.startsWith(".git/") || remoteFile.path === ".gitignore" || remoteFile.path === "README.md" || remoteFile.path === "LICENSE") {
           result.skippedFiles++;
@@ -4756,7 +4853,7 @@ var SyncEngine = class {
           result.skippedFiles++;
           continue;
         }
-        const success = await this.downloadFile(remoteFile.path);
+        const success = await this.downloadFile(remoteFile.path, true);
         if (success) {
           result.uploadedFiles++;
         } else {
@@ -4768,7 +4865,7 @@ var SyncEngine = class {
         }
       }
       const localFiles = this.getAllFiles();
-      const tempFileNames = ["\u672A\u547D\u540D", "Untitled", "Untitled-1", "Untitled-2", "Untitled-3", "New note", "\u65B0\u7B14\u8BB0"];
+      const tempFileNames = TEMP_FILE_NAMES;
       for (const localFile of localFiles) {
         if (this.shouldExcludeFile(localFile.path)) {
           continue;
@@ -4824,78 +4921,205 @@ var SyncEngine = class {
         errors: ["Not authenticated"]
       };
     }
-    const pullResult = await this.pullFromRemote();
-    const conflicts = this.plugin.stateManager.getConflictFiles();
-    if (conflicts.length > 0) {
-      new import_obsidian2.Notice(t("conflictsPaused", { count: conflicts.length }));
-      if (this.plugin.statusBar) {
-        this.plugin.statusBar.setConflictCount(conflicts.length);
-      }
+    const { repoOwner, repoName } = this.plugin.settings;
+    if (!repoOwner || !repoName) {
       return {
-        ...pullResult,
-        errors: [...pullResult.errors, `${conflicts.length} conflicts detected`]
+        success: false,
+        uploadedFiles: 0,
+        skippedFiles: 0,
+        errorFiles: 0,
+        deletedFiles: 0,
+        errors: [t("repoNotConfigured")]
       };
     }
-    const { repoOwner, repoName, excludedPaths, excludedExtensions, fileSizeLimit } = this.plugin.settings;
-    const tempFileNames = ["\u672A\u547D\u540D", "Untitled", "Untitled-1", "Untitled-2", "Untitled-3", "New note", "\u65B0\u7B14\u8BB0"];
-    const remoteFiles = await this.client.getAllFiles(repoOwner, repoName);
-    const remoteFileMap = /* @__PURE__ */ new Map();
-    for (const file of remoteFiles) {
-      remoteFileMap.set(file.path, file.sha);
+    if (this.plugin.statusBar) {
+      this.plugin.statusBar.startSyncing();
     }
-    const localFiles = this.getAllFiles();
-    let uploadCount = 0;
-    let uploadErrorCount = 0;
-    for (const localFile of localFiles) {
-      if (this.shouldExcludeFile(localFile.path)) {
-        continue;
+    new import_obsidian2.Notice(t("startingSync"));
+    console.log("Starting bidirectional sync...");
+    const result = {
+      success: true,
+      uploadedFiles: 0,
+      skippedFiles: 0,
+      errorFiles: 0,
+      deletedFiles: 0,
+      errors: []
+    };
+    try {
+      const remoteFiles = await this.client.getAllFiles(repoOwner, repoName);
+      const remoteFileMap = /* @__PURE__ */ new Map();
+      for (const file of remoteFiles) {
+        remoteFileMap.set(file.path, { sha: file.sha, path: file.path });
       }
-      const fileName = localFile.basename;
-      if (tempFileNames.some(
-        (tempName) => fileName === tempName || fileName.startsWith(tempName + "-")
-      )) {
-        continue;
-      }
-      if (!this.isFileSizeOk(localFile.stat.size)) {
-        continue;
-      }
-      const remoteSha = remoteFileMap.get(localFile.path);
-      const fileState = this.plugin.stateManager.getFileState(localFile.path);
-      const needsUpload = !remoteSha || !fileState || new Date(localFile.stat.mtime) > new Date(fileState.localModified);
-      if (needsUpload) {
-        const success = await this.uploadSingleFile(localFile);
+      const tempFileNames = TEMP_FILE_NAMES;
+      const totalRemoteFiles = remoteFiles.length;
+      let processedRemoteFiles = 0;
+      for (const remoteFile of remoteFiles) {
+        processedRemoteFiles++;
+        if (this.plugin.statusBar) {
+          this.plugin.statusBar.updateProgress(processedRemoteFiles, totalRemoteFiles, "pull");
+        }
+        if (remoteFile.path.startsWith(".git/") || remoteFile.path === ".gitignore" || remoteFile.path === "README.md" || remoteFile.path === "LICENSE") {
+          result.skippedFiles++;
+          continue;
+        }
+        if (this.shouldExcludeFile(remoteFile.path)) {
+          result.skippedFiles++;
+          continue;
+        }
+        const success = await this.downloadFile(remoteFile.path, false);
         if (success) {
-          uploadCount++;
-        } else {
-          uploadErrorCount++;
+          result.uploadedFiles++;
         }
       }
+      const conflicts = this.plugin.stateManager.getConflictFiles();
+      if (conflicts.length > 0) {
+        new import_obsidian2.Notice(t("conflictsPaused", { count: conflicts.length }));
+        if (this.plugin.statusBar) {
+          this.plugin.statusBar.setConflictCount(conflicts.length);
+          this.plugin.statusBar.endSync(false);
+        }
+        return {
+          ...result,
+          errors: [...result.errors, `${conflicts.length} conflicts detected`]
+        };
+      }
+      const localFiles = this.getAllFiles();
+      for (const localFile of localFiles) {
+        if (this.shouldExcludeFile(localFile.path)) {
+          continue;
+        }
+        const fileName = localFile.basename;
+        if (tempFileNames.some(
+          (tempName) => fileName === tempName || fileName.startsWith(tempName + "-")
+        )) {
+          continue;
+        }
+        if (!remoteFileMap.has(localFile.path)) {
+          try {
+            await this.vault.delete(localFile);
+            result.deletedFiles++;
+            console.log("Deleted local file (remote deleted):", localFile.path);
+          } catch (error) {
+            result.errorFiles++;
+            result.errors.push(`Failed to delete local: ${localFile.path}`);
+          }
+        }
+      }
+      let uploadCount = 0;
+      let uploadErrorCount = 0;
+      const totalLocalFiles = localFiles.length;
+      let processedLocalFiles = 0;
+      for (const localFile of localFiles) {
+        processedLocalFiles++;
+        if (this.plugin.statusBar) {
+          this.plugin.statusBar.updateProgress(processedLocalFiles, totalLocalFiles, "push");
+        }
+        if (this.shouldExcludeFile(localFile.path)) {
+          continue;
+        }
+        const fileName = localFile.basename;
+        if (tempFileNames.some(
+          (tempName) => fileName === tempName || fileName.startsWith(tempName + "-")
+        )) {
+          continue;
+        }
+        if (!this.isFileSizeOk(localFile.stat.size)) {
+          continue;
+        }
+        const remoteInfo = remoteFileMap.get(localFile.path);
+        const fileState = this.plugin.stateManager.getFileState(localFile.path);
+        const needsUpload = !remoteInfo || !fileState || new Date(localFile.stat.mtime) > new Date(fileState.localModified);
+        if (needsUpload) {
+          const success = await this.uploadSingleFileWithSha(localFile, remoteInfo == null ? void 0 : remoteInfo.sha);
+          if (success) {
+            uploadCount++;
+          } else {
+            uploadErrorCount++;
+          }
+        }
+      }
+      result.uploadedFiles += uploadCount;
+      result.errorFiles += uploadErrorCount;
+      if (this.plugin.statusBar) {
+        this.plugin.statusBar.endSync(result.errorFiles === 0);
+      }
+      const message = result.deletedFiles > 0 ? t("pullWithDeletes", { downloaded: result.uploadedFiles - uploadCount, deleted: result.deletedFiles }) : t("syncCompleted", { count: result.uploadedFiles });
+      new import_obsidian2.Notice(message);
+      console.log("Bidirectional sync completed:", result);
+      return result;
+    } catch (error) {
+      console.error("Bidirectional sync failed:", error);
+      if (this.plugin.statusBar) {
+        this.plugin.statusBar.endSync(false);
+      }
+      return {
+        success: false,
+        uploadedFiles: 0,
+        skippedFiles: 0,
+        errorFiles: 0,
+        deletedFiles: 0,
+        errors: [String(error)]
+      };
     }
-    return {
-      success: pullResult.success && uploadErrorCount === 0,
-      uploadedFiles: pullResult.uploadedFiles + uploadCount,
-      skippedFiles: pullResult.skippedFiles,
-      errorFiles: pullResult.errorFiles + uploadErrorCount,
-      deletedFiles: pullResult.deletedFiles,
-      errors: pullResult.errors
-    };
+  }
+  // 上传单个文件（使用已知的 SHA，减少 API 调用）
+  async uploadSingleFileWithSha(file, knownRemoteSha) {
+    if (!this.client) {
+      return false;
+    }
+    const { repoOwner, repoName } = this.plugin.settings;
+    if (!repoOwner || !repoName) {
+      return false;
+    }
+    try {
+      const content = await this.vault.readBinary(file);
+      const base64Content = this.arrayBufferToBase64(content);
+      let sha = knownRemoteSha;
+      if (sha === void 0) {
+        const existingFile = await this.client.getFile({
+          owner: repoOwner,
+          repo: repoName,
+          path: file.path
+        });
+        sha = existingFile == null ? void 0 : existingFile.sha;
+      }
+      const uploadResult = await this.client.uploadFile({
+        owner: repoOwner,
+        repo: repoName,
+        path: file.path,
+        message: sha ? `Update ${file.path}` : `Upload ${file.path}`,
+        content: base64Content,
+        sha
+      });
+      if (uploadResult) {
+        await this.plugin.stateManager.updateFileSynced(
+          file.path,
+          uploadResult.sha,
+          new Date(file.stat.mtime).toISOString()
+        );
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error("Failed to upload file:", file.path, error);
+      return false;
+    }
   }
   // 上传单个文件
   async uploadSingleFile(file) {
     if (!this.client) {
       return false;
     }
-    const { repoOwner, repoName, fileSizeLimit } = this.plugin.settings;
+    const { repoOwner, repoName } = this.plugin.settings;
     if (!repoOwner || !repoName) {
       return false;
     }
     if (this.shouldExcludeFile(file.path)) {
       return false;
     }
-    const tempFileNames = ["\u672A\u547D\u540D", "Untitled", "Untitled-1", "Untitled-2", "Untitled-3", "New note", "\u65B0\u7B14\u8BB0"];
-    const fileName = file.basename;
-    if (tempFileNames.some(
-      (tempName) => fileName === tempName || fileName.startsWith(tempName + "-")
+    if (TEMP_FILE_NAMES.some(
+      (tempName) => file.basename === tempName || file.basename.startsWith(tempName + "-")
     )) {
       console.log("Skipping temp file:", file.path);
       return false;
@@ -5004,7 +5228,7 @@ var StateManager = class {
   // 保存状态
   async saveState() {
     try {
-      const data = await this.plugin.loadData();
+      const data = await this.plugin.loadData() || {};
       data.syncState = this.state;
       await this.plugin.saveData(data);
     } catch (error) {
@@ -5112,7 +5336,441 @@ var StateManager = class {
 };
 
 // src/ui/status-bar.ts
+var import_obsidian5 = require("obsidian");
+
+// src/ui/conflict-modal.ts
+var import_obsidian4 = require("obsidian");
+
+// src/sync/conflict-handler.ts
 var import_obsidian3 = require("obsidian");
+var ConflictHandler = class {
+  constructor(plugin) {
+    this.plugin = plugin;
+    this.vault = plugin.app.vault;
+  }
+  // 判断是否为二进制文件
+  isBinaryFile(path) {
+    const binaryExtensions = [
+      ".png",
+      ".jpg",
+      ".jpeg",
+      ".gif",
+      ".bmp",
+      ".ico",
+      ".pdf",
+      ".zip",
+      ".tar",
+      ".gz",
+      ".rar",
+      ".mp3",
+      ".mp4",
+      ".wav",
+      ".avi",
+      ".mov",
+      ".doc",
+      ".docx",
+      ".xls",
+      ".xlsx",
+      ".ppt",
+      ".pptx"
+    ];
+    const ext = path.toLowerCase().substring(path.lastIndexOf("."));
+    return binaryExtensions.includes(ext);
+  }
+  // 生成冲突副本文件名
+  generateConflictFilename(path) {
+    const now = /* @__PURE__ */ new Date();
+    const timestamp = now.toISOString().replace(/:/g, "-").replace(/\..+/, "");
+    const dotIndex = path.lastIndexOf(".");
+    if (dotIndex > 0) {
+      const name = path.substring(0, dotIndex);
+      const ext = path.substring(dotIndex);
+      return `${name}_conflict_${timestamp}${ext}`;
+    }
+    return `${path}_conflict_${timestamp}`;
+  }
+  // 获取文件内容
+  async getFileContent(file) {
+    try {
+      return await this.vault.read(file);
+    } catch (error) {
+      console.error("Failed to read file:", file.path, error);
+      return "";
+    }
+  }
+  // 智能合并 Markdown 文件
+  smartMerge(localContent, remoteContent) {
+    const localParagraphs = this.splitParagraphs(localContent);
+    const remoteParagraphs = this.splitParagraphs(remoteContent);
+    const lcs = this.findLCS(localParagraphs, remoteParagraphs);
+    const mergedParagraphs = [];
+    let localIdx = 0;
+    let remoteIdx = 0;
+    let lcsIdx = 0;
+    let hasConflictBlocks = false;
+    while (localIdx < localParagraphs.length || remoteIdx < remoteParagraphs.length) {
+      const localPara = localParagraphs[localIdx];
+      const remotePara = remoteParagraphs[remoteIdx];
+      const lcsPara = lcs[lcsIdx];
+      if (lcsPara && localPara === lcsPara && remotePara === lcsPara) {
+        mergedParagraphs.push(lcsPara);
+        localIdx++;
+        remoteIdx++;
+        lcsIdx++;
+      } else if (localPara !== void 0 && (!lcsPara || localPara !== lcsPara)) {
+        if (remotePara !== void 0 && (!lcsPara || remotePara !== lcsPara)) {
+          hasConflictBlocks = true;
+          mergedParagraphs.push("<<<<<<< LOCAL");
+          mergedParagraphs.push(localPara);
+          mergedParagraphs.push("=======");
+          mergedParagraphs.push(remotePara);
+          mergedParagraphs.push(">>>>>>> REMOTE");
+          localIdx++;
+          remoteIdx++;
+        } else {
+          mergedParagraphs.push(localPara);
+          localIdx++;
+        }
+      } else if (remotePara !== void 0 && (!lcsPara || remotePara !== lcsPara)) {
+        mergedParagraphs.push(remotePara);
+        remoteIdx++;
+      } else {
+        break;
+      }
+    }
+    return {
+      success: true,
+      content: mergedParagraphs.join("\n\n"),
+      hasConflictBlocks
+    };
+  }
+  // 按段落分割（保留空行分隔）
+  splitParagraphs(content) {
+    return content.split(/\n\s*\n/).map((p) => p.trim()).filter((p) => p.length > 0);
+  }
+  // LCS 算法（最长公共子序列）
+  findLCS(a, b) {
+    const m = a.length;
+    const n = b.length;
+    const dp = [];
+    for (let i2 = 0; i2 <= m; i2++) {
+      dp[i2] = [];
+      for (let j2 = 0; j2 <= n; j2++) {
+        dp[i2][j2] = 0;
+      }
+    }
+    for (let i2 = 1; i2 <= m; i2++) {
+      for (let j2 = 1; j2 <= n; j2++) {
+        if (a[i2 - 1] === b[j2 - 1]) {
+          dp[i2][j2] = dp[i2 - 1][j2 - 1] + 1;
+        } else {
+          dp[i2][j2] = Math.max(dp[i2 - 1][j2], dp[i2][j2 - 1]);
+        }
+      }
+    }
+    const result = [];
+    let i = m;
+    let j = n;
+    while (i > 0 && j > 0) {
+      if (a[i - 1] === b[j - 1]) {
+        result.unshift(a[i - 1]);
+        i--;
+        j--;
+      } else if (dp[i - 1][j] > dp[i][j - 1]) {
+        i--;
+      } else {
+        j--;
+      }
+    }
+    return result;
+  }
+  // 解决冲突
+  async resolveConflict(conflict, resolution) {
+    const { path, localContent, remoteContent, remoteSha, isBinary } = conflict;
+    try {
+      switch (resolution) {
+        case "keep-local":
+          await this.plugin.stateManager.updateFileSynced(
+            path,
+            remoteSha,
+            (/* @__PURE__ */ new Date()).toISOString()
+          );
+          new import_obsidian3.Notice(t("conflictResolvedKeepLocal", { path }));
+          break;
+        case "use-remote":
+          const localFile = this.vault.getAbstractFileByPath(path);
+          if (localFile instanceof import_obsidian3.TFile) {
+            await this.vault.modify(localFile, remoteContent);
+          }
+          await this.plugin.stateManager.updateFileSynced(
+            path,
+            remoteSha,
+            (/* @__PURE__ */ new Date()).toISOString()
+          );
+          new import_obsidian3.Notice(t("conflictResolvedUseRemote", { path }));
+          break;
+        case "keep-both":
+          const conflictPath = this.generateConflictFilename(path);
+          const originalFile = this.vault.getAbstractFileByPath(path);
+          if (originalFile instanceof import_obsidian3.TFile) {
+            await this.vault.create(conflictPath, remoteContent);
+            await this.plugin.stateManager.updateFileSynced(
+              path,
+              remoteSha,
+              (/* @__PURE__ */ new Date()).toISOString()
+            );
+            await this.plugin.stateManager.markFilePending(
+              conflictPath,
+              (/* @__PURE__ */ new Date()).toISOString()
+            );
+          }
+          new import_obsidian3.Notice(t("conflictResolvedKeepBoth", { path, conflictPath }));
+          break;
+        case "smart-merge":
+          if (isBinary) {
+            new import_obsidian3.Notice(t("conflictBinaryNoMerge", { path }));
+            return false;
+          }
+          const mergeResult = this.smartMerge(localContent, remoteContent);
+          if (mergeResult.hasConflictBlocks) {
+            const file = this.vault.getAbstractFileByPath(path);
+            if (file instanceof import_obsidian3.TFile) {
+              await this.vault.modify(file, mergeResult.content);
+            }
+            new import_obsidian3.Notice(t("conflictMergedWithBlocks", { path }));
+          } else {
+            const file = this.vault.getAbstractFileByPath(path);
+            if (file instanceof import_obsidian3.TFile) {
+              await this.vault.modify(file, mergeResult.content);
+            }
+            await this.plugin.stateManager.updateFileSynced(
+              path,
+              remoteSha,
+              (/* @__PURE__ */ new Date()).toISOString()
+            );
+            new import_obsidian3.Notice(t("conflictMerged", { path }));
+          }
+          break;
+      }
+      return true;
+    } catch (error) {
+      console.error("Failed to resolve conflict:", path, error);
+      new import_obsidian3.Notice(t("conflictResolveFailed", { path }));
+      return false;
+    }
+  }
+  // 批量解决冲突
+  async resolveConflicts(conflicts, resolutions) {
+    let success = 0;
+    let failed = 0;
+    for (const conflict of conflicts) {
+      const resolution = resolutions.get(conflict.path);
+      if (resolution) {
+        const result = await this.resolveConflict(conflict, resolution);
+        if (result) {
+          success++;
+        } else {
+          failed++;
+        }
+      }
+    }
+    return { success, failed };
+  }
+};
+
+// src/ui/conflict-modal.ts
+var ConflictResolutionModal = class extends import_obsidian4.Modal {
+  constructor(app, plugin) {
+    super(app);
+    this.conflicts = [];
+    this.resolutions = /* @__PURE__ */ new Map();
+    this.selectedResolution = /* @__PURE__ */ new Map();
+    this.plugin = plugin;
+    this.conflictHandler = new ConflictHandler(plugin);
+  }
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("git-sync-conflict-modal");
+    await this.loadConflicts();
+    contentEl.createEl("h2", { text: t("conflictResolutionTitle") });
+    contentEl.createEl("p", {
+      text: t("conflictResolutionDesc", { count: this.conflicts.length }),
+      cls: "git-sync-conflict-desc"
+    });
+    const listEl = contentEl.createDiv({ cls: "git-sync-conflict-list" });
+    for (const conflict of this.conflicts) {
+      this.renderConflictItem(listEl, conflict);
+    }
+    const buttonContainer = contentEl.createDiv({ cls: "git-sync-conflict-buttons" });
+    new import_obsidian4.Setting(buttonContainer).addButton((button) => button.setButtonText(t("applyResolutions")).setCta().onClick(async () => {
+      await this.applyResolutions();
+    })).addButton((button) => button.setButtonText(t("cancel")).onClick(() => {
+      this.close();
+    }));
+  }
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
+  }
+  // 加载冲突文件信息
+  async loadConflicts() {
+    const conflictPaths = this.plugin.stateManager.getConflictFiles();
+    const client = this.plugin.authManager.getClient();
+    if (!client) {
+      return;
+    }
+    for (const path of conflictPaths) {
+      const localFile = this.app.vault.getAbstractFileByPath(path);
+      const fileState = this.plugin.stateManager.getFileState(path);
+      if (!(localFile instanceof import_obsidian4.TFile) || !fileState) {
+        continue;
+      }
+      try {
+        const localContent = await this.app.vault.read(localFile);
+        const remoteFile = await client.getFile({
+          owner: this.plugin.settings.repoOwner,
+          repo: this.plugin.settings.repoName,
+          path
+        });
+        if (!remoteFile || !remoteFile.content) {
+          continue;
+        }
+        const remoteContent = this.base64ToString(remoteFile.content);
+        const isBinary = this.conflictHandler.isBinaryFile(path);
+        this.conflicts.push({
+          path,
+          localContent,
+          remoteContent,
+          remoteSha: remoteFile.sha,
+          localModified: fileState.localModified,
+          isBinary
+        });
+        this.selectedResolution.set(path, "smart-merge");
+      } catch (error) {
+        console.error("Failed to load conflict file:", path, error);
+      }
+    }
+  }
+  // Base64 转字符串
+  base64ToString(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+  // 渲染单个冲突项
+  renderConflictItem(container, conflict) {
+    const itemEl = container.createDiv({ cls: "git-sync-conflict-item" });
+    const headerEl = itemEl.createDiv({ cls: "git-sync-conflict-item-header" });
+    headerEl.createEl("span", { text: "\u{1F4C4}", cls: "git-sync-conflict-icon" });
+    headerEl.createEl("span", { text: conflict.path, cls: "git-sync-conflict-path" });
+    if (conflict.isBinary) {
+      headerEl.createEl("span", {
+        text: t("conflictBinaryFile"),
+        cls: "git-sync-conflict-binary-badge"
+      });
+    }
+    const optionsEl = itemEl.createDiv({ cls: "git-sync-conflict-options" });
+    const options = [
+      { value: "keep-local", label: t("conflictKeepLocal"), desc: t("conflictKeepLocalDesc") },
+      { value: "use-remote", label: t("conflictUseRemote"), desc: t("conflictUseRemoteDesc") },
+      { value: "keep-both", label: t("conflictKeepBoth"), desc: t("conflictKeepBothDesc") },
+      { value: "smart-merge", label: t("conflictSmartMerge"), desc: t("conflictSmartMergeDesc") }
+    ];
+    const availableOptions = conflict.isBinary ? options.filter((o) => o.value !== "smart-merge") : options;
+    new import_obsidian4.Setting(optionsEl).addDropdown((dropdown) => {
+      dropdown.addOptions(availableOptions.reduce((acc, o) => {
+        acc[o.value] = o.label;
+        return acc;
+      }, {})).setValue(this.selectedResolution.get(conflict.path) || "keep-local").onChange((value) => {
+        this.selectedResolution.set(conflict.path, value);
+      });
+    });
+    const diffButtonEl = itemEl.createDiv({ cls: "git-sync-conflict-diff-button" });
+    new import_obsidian4.Setting(diffButtonEl).addButton((button) => button.setButtonText(t("conflictViewDiff")).onClick(() => {
+      if (!conflict.isBinary) {
+        new ConflictDiffModal(this.app, this.plugin, conflict).open();
+      } else {
+        new import_obsidian4.Notice(t("conflictBinaryNoDiff"));
+      }
+    }));
+  }
+  // 应用选择的解决方案
+  async applyResolutions() {
+    for (const [path, value] of this.selectedResolution) {
+      this.resolutions.set(path, value);
+    }
+    const result = await this.conflictHandler.resolveConflicts(this.conflicts, this.resolutions);
+    if (result.success > 0) {
+      new import_obsidian4.Notice(t("conflictResolvedCount", {
+        success: result.success,
+        failed: result.failed
+      }));
+    }
+    const remainingConflicts = this.plugin.stateManager.getConflictFiles().length;
+    if (this.plugin.statusBar) {
+      this.plugin.statusBar.setConflictCount(remainingConflicts);
+    }
+    if (remainingConflicts > 0) {
+      this.conflicts = [];
+      this.resolutions.clear();
+      this.selectedResolution.clear();
+      await this.loadConflicts();
+      this.contentEl.empty();
+      await this.onOpen();
+    } else {
+      this.close();
+    }
+  }
+};
+var ConflictDiffModal = class extends import_obsidian4.Modal {
+  constructor(app, plugin, conflict) {
+    super(app);
+    this.plugin = plugin;
+    this.conflict = conflict;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("git-sync-conflict-diff-modal");
+    contentEl.createEl("h2", { text: t("conflictDiffTitle") });
+    contentEl.createEl("p", {
+      text: this.conflict.path,
+      cls: "git-sync-conflict-diff-path"
+    });
+    const diffContainer = contentEl.createDiv({ cls: "git-sync-conflict-diff-container" });
+    const localSection = diffContainer.createDiv({ cls: "git-sync-conflict-diff-section" });
+    localSection.createEl("h3", { text: t("conflictLocalVersion") });
+    const localContentEl = localSection.createDiv({ cls: "git-sync-conflict-diff-content" });
+    import_obsidian4.MarkdownRenderer.render(
+      this.app,
+      this.conflict.localContent,
+      localContentEl,
+      this.conflict.path,
+      new import_obsidian4.Component()
+    );
+    const remoteSection = diffContainer.createDiv({ cls: "git-sync-conflict-diff-section" });
+    remoteSection.createEl("h3", { text: t("conflictRemoteVersion") });
+    const remoteContentEl = remoteSection.createDiv({ cls: "git-sync-conflict-diff-content" });
+    import_obsidian4.MarkdownRenderer.render(
+      this.app,
+      this.conflict.remoteContent,
+      remoteContentEl,
+      this.conflict.path,
+      new import_obsidian4.Component()
+    );
+    new import_obsidian4.Setting(contentEl).addButton((button) => button.setButtonText(t("close")).onClick(() => {
+      this.close();
+    }));
+  }
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
+  }
+};
+
+// src/ui/status-bar.ts
 var StatusBarManager = class {
   constructor(plugin) {
     this.currentStatus = "offline";
@@ -5210,11 +5868,11 @@ var StatusBarManager = class {
   }
   // 显示点击菜单
   showMenu(evt) {
-    const menu = new import_obsidian3.Menu();
+    const menu = new import_obsidian5.Menu();
     menu.addItem((item) => {
       item.setTitle(t("menuSyncNow")).onClick(() => {
         if (!this.plugin.isAuthenticated) {
-          new import_obsidian3.Notice(t("pleaseLogin"));
+          new import_obsidian5.Notice(t("pleaseLogin"));
           return;
         }
         this.plugin.syncNow();
@@ -5224,11 +5882,11 @@ var StatusBarManager = class {
     menu.addItem((item) => {
       item.setTitle(t("menuPullFromRemote")).onClick(() => {
         if (!this.plugin.isAuthenticated) {
-          new import_obsidian3.Notice(t("pleaseLogin"));
+          new import_obsidian5.Notice(t("pleaseLogin"));
           return;
         }
         if (!this.plugin.settings.repoOwner || !this.plugin.settings.repoName) {
-          new import_obsidian3.Notice(t("pleaseConfigRepo"));
+          new import_obsidian5.Notice(t("pleaseConfigRepo"));
           return;
         }
         this.plugin.pullFromRemote();
@@ -5237,11 +5895,11 @@ var StatusBarManager = class {
     menu.addItem((item) => {
       item.setTitle(t("menuPushToRemote")).onClick(() => {
         if (!this.plugin.isAuthenticated) {
-          new import_obsidian3.Notice(t("pleaseLogin"));
+          new import_obsidian5.Notice(t("pleaseLogin"));
           return;
         }
         if (!this.plugin.settings.repoOwner || !this.plugin.settings.repoName) {
-          new import_obsidian3.Notice(t("pleaseConfigRepo"));
+          new import_obsidian5.Notice(t("pleaseConfigRepo"));
           return;
         }
         this.plugin.fullSync();
@@ -5251,7 +5909,8 @@ var StatusBarManager = class {
       menu.addSeparator();
       menu.addItem((item) => {
         item.setTitle(t("menuConflicts", { count: this.conflictCount })).onClick(() => {
-          new import_obsidian3.Notice("Conflict resolution coming soon");
+          const modal = new ConflictResolutionModal(this.plugin.app, this.plugin);
+          modal.open();
         });
       });
     }
@@ -5311,8 +5970,9 @@ var StatusBarManager = class {
     }
   }
   // 更新同步进度
-  updateProgress(current, total) {
-    this.setStatus("syncing", `${current}/${total}`);
+  updateProgress(current, total, phase) {
+    const phaseText = phase === "pull" ? "\u2193" : phase === "push" ? "\u2191" : "";
+    this.setStatus("syncing", `${phaseText}${current}/${total}`);
   }
 };
 
@@ -5334,7 +5994,7 @@ var DEFAULT_SETTINGS = {
   ],
   excludedExtensions: []
 };
-var _GitSyncPlugin = class _GitSyncPlugin extends import_obsidian4.Plugin {
+var GitSyncPlugin = class extends import_obsidian6.Plugin {
   constructor() {
     super(...arguments);
     this.isAuthenticated = false;
@@ -5412,28 +6072,28 @@ var _GitSyncPlugin = class _GitSyncPlugin extends import_obsidian4.Plugin {
   registerFileWatcher() {
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian4.TFile) {
+        if (file instanceof import_obsidian6.TFile) {
           this.handleFileChange(file);
         }
       })
     );
     this.registerEvent(
       this.app.vault.on("create", (file) => {
-        if (file instanceof import_obsidian4.TFile) {
+        if (file instanceof import_obsidian6.TFile) {
           this.handleFileChange(file);
         }
       })
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (file instanceof import_obsidian4.TFile) {
+        if (file instanceof import_obsidian6.TFile) {
           this.handleFileDelete(file);
         }
       })
     );
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        if (file instanceof import_obsidian4.TFile) {
+        if (file instanceof import_obsidian6.TFile) {
           this.handleFileRename(file, oldPath);
         }
       })
@@ -5454,7 +6114,7 @@ var _GitSyncPlugin = class _GitSyncPlugin extends import_obsidian4.Plugin {
       return;
     }
     const fileName = file.basename;
-    if (_GitSyncPlugin.TEMP_FILE_NAMES.some(
+    if (TEMP_FILE_NAMES.some(
       (tempName) => fileName === tempName || fileName.startsWith(tempName + "-")
     )) {
       return;
@@ -5480,7 +6140,7 @@ var _GitSyncPlugin = class _GitSyncPlugin extends import_obsidian4.Plugin {
     }
     this.stateManager.clearFileState(file.path);
     const fileName = file.basename;
-    const wasTempFile = _GitSyncPlugin.TEMP_FILE_NAMES.some(
+    const wasTempFile = TEMP_FILE_NAMES.some(
       (tempName) => fileName === tempName || fileName.startsWith(tempName + "-")
     );
     if (!wasTempFile && !this.syncEngine.shouldExcludeFile(file.path)) {
@@ -5501,7 +6161,7 @@ var _GitSyncPlugin = class _GitSyncPlugin extends import_obsidian4.Plugin {
     this.syncEngine.setClient(client);
     const success = await this.syncEngine.deleteRemoteFile(path);
     if (success) {
-      new import_obsidian4.Notice(t("deletedFromRemote", { path }));
+      new import_obsidian6.Notice(t("deletedFromRemote", { path }));
     }
   }
   // 处理文件重命名/移动
@@ -5511,14 +6171,14 @@ var _GitSyncPlugin = class _GitSyncPlugin extends import_obsidian4.Plugin {
     }
     this.stateManager.clearFileState(oldPath);
     const oldFileName = this.getFileNameFromPath(oldPath);
-    const wasTempFile = _GitSyncPlugin.TEMP_FILE_NAMES.some(
+    const wasTempFile = TEMP_FILE_NAMES.some(
       (tempName) => oldFileName === tempName || oldFileName.startsWith(tempName + "-")
     );
     if (!wasTempFile && !this.syncEngine.shouldExcludeFile(oldPath)) {
       this.deleteRemoteFile(oldPath);
     }
     const fileName = file.basename;
-    if (_GitSyncPlugin.TEMP_FILE_NAMES.some(
+    if (TEMP_FILE_NAMES.some(
       (tempName) => fileName === tempName || fileName.startsWith(tempName + "-")
     )) {
       return;
@@ -5552,7 +6212,7 @@ var _GitSyncPlugin = class _GitSyncPlugin extends import_obsidian4.Plugin {
     let errorCount = 0;
     for (const filePath of filesToSync) {
       const file = this.app.vault.getAbstractFileByPath(filePath);
-      if (file instanceof import_obsidian4.TFile) {
+      if (file instanceof import_obsidian6.TFile) {
         const success = await this.syncEngine.uploadSingleFile(file);
         if (success) {
           successCount++;
@@ -5565,7 +6225,7 @@ var _GitSyncPlugin = class _GitSyncPlugin extends import_obsidian4.Plugin {
     }
     this.statusBar.endSync(errorCount === 0);
     if (successCount > 0) {
-      new import_obsidian4.Notice(t("syncedFiles", { count: successCount }));
+      new import_obsidian6.Notice(t("syncedFiles", { count: successCount }));
     }
     const pendingCount = this.stateManager.getPendingFiles().length;
     this.statusBar.setPendingCount(pendingCount);
@@ -5577,16 +6237,16 @@ var _GitSyncPlugin = class _GitSyncPlugin extends import_obsidian4.Plugin {
   async fullSync() {
     console.log("Full sync triggered");
     if (!this.isAuthenticated) {
-      new import_obsidian4.Notice(t("pleaseLogin"));
+      new import_obsidian6.Notice(t("pleaseLogin"));
       return;
     }
     if (!this.settings.repoOwner || !this.settings.repoName) {
-      new import_obsidian4.Notice(t("pleaseConfigRepo"));
+      new import_obsidian6.Notice(t("pleaseConfigRepo"));
       return;
     }
     const client = this.authManager.getClient();
     if (!client) {
-      new import_obsidian4.Notice(t("notAuthenticated"));
+      new import_obsidian6.Notice(t("notAuthenticated"));
       return;
     }
     this.syncEngine.setClient(client);
@@ -5595,16 +6255,16 @@ var _GitSyncPlugin = class _GitSyncPlugin extends import_obsidian4.Plugin {
   async pullFromRemote() {
     console.log("Pull from remote triggered");
     if (!this.isAuthenticated) {
-      new import_obsidian4.Notice(t("pleaseLogin"));
+      new import_obsidian6.Notice(t("pleaseLogin"));
       return;
     }
     if (!this.settings.repoOwner || !this.settings.repoName) {
-      new import_obsidian4.Notice(t("pleaseConfigRepo"));
+      new import_obsidian6.Notice(t("pleaseConfigRepo"));
       return;
     }
     const client = this.authManager.getClient();
     if (!client) {
-      new import_obsidian4.Notice(t("notAuthenticated"));
+      new import_obsidian6.Notice(t("notAuthenticated"));
       return;
     }
     this.syncEngine.setClient(client);
@@ -5613,34 +6273,23 @@ var _GitSyncPlugin = class _GitSyncPlugin extends import_obsidian4.Plugin {
   async bidirectionalSync() {
     console.log("Bidirectional sync triggered");
     if (!this.isAuthenticated) {
-      new import_obsidian4.Notice(t("pleaseLogin"));
+      new import_obsidian6.Notice(t("pleaseLogin"));
       return;
     }
     if (!this.settings.repoOwner || !this.settings.repoName) {
-      new import_obsidian4.Notice(t("pleaseConfigRepo"));
+      new import_obsidian6.Notice(t("pleaseConfigRepo"));
       return;
     }
     const client = this.authManager.getClient();
     if (!client) {
-      new import_obsidian4.Notice(t("notAuthenticated"));
+      new import_obsidian6.Notice(t("notAuthenticated"));
       return;
     }
     this.syncEngine.setClient(client);
     await this.syncEngine.bidirectionalSync();
   }
 };
-// 临时文件名列表（新建笔记时的默认名称，需要过滤）
-_GitSyncPlugin.TEMP_FILE_NAMES = [
-  "\u672A\u547D\u540D",
-  "Untitled",
-  "Untitled-1",
-  "Untitled-2",
-  "Untitled-3",
-  "New note",
-  "\u65B0\u7B14\u8BB0"
-];
-var GitSyncPlugin = _GitSyncPlugin;
-var GitSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
+var GitSyncSettingTab = class extends import_obsidian6.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -5652,32 +6301,32 @@ var GitSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
     containerEl.createEl("h3", { text: t("account") });
     const authStatus = this.plugin.authManager.getAuthStatus();
     if (authStatus.isAuthenticated) {
-      new import_obsidian4.Setting(containerEl).setName(t("loggedInAs")).setDesc(authStatus.username || "Unknown").addButton((button) => button.setButtonText(t("logout")).onClick(async () => {
+      new import_obsidian6.Setting(containerEl).setName(t("loggedInAs")).setDesc(authStatus.username || "Unknown").addButton((button) => button.setButtonText(t("logout")).onClick(async () => {
         this.plugin.authManager.logout();
         this.plugin.settings.githubToken = "";
         this.plugin.settings.githubUsername = "";
         await this.plugin.saveSettings();
         this.display();
-        new import_obsidian4.Notice(t("logoutSuccess"));
+        new import_obsidian6.Notice(t("logoutSuccess"));
       }));
     } else {
       let tokenInput = "";
-      new import_obsidian4.Setting(containerEl).setName(t("githubToken")).setDesc(t("githubTokenDesc")).addText((text) => text.setPlaceholder("ghp_xxx...").setValue("").onChange((value) => {
+      new import_obsidian6.Setting(containerEl).setName(t("githubToken")).setDesc(t("githubTokenDesc")).addText((text) => text.setPlaceholder("ghp_xxx...").setValue("").onChange((value) => {
         tokenInput = value;
       })).addButton((button) => button.setButtonText(t("login")).setCta().onClick(async () => {
         if (!tokenInput) {
-          new import_obsidian4.Notice(t("pleaseLogin"));
+          new import_obsidian6.Notice(t("pleaseLogin"));
           return;
         }
-        new import_obsidian4.Notice(t("verifyingToken"));
+        new import_obsidian6.Notice(t("verifyingToken"));
         const success = await this.plugin.authManager.authenticateWithToken(tokenInput);
         if (success) {
           this.plugin.settings.githubToken = encryptToken(tokenInput);
           await this.plugin.saveSettings();
           this.display();
-          new import_obsidian4.Notice(t("loginSuccess"));
+          new import_obsidian6.Notice(t("loginSuccess"));
         } else {
-          new import_obsidian4.Notice(t("invalidToken"));
+          new import_obsidian6.Notice(t("invalidToken"));
         }
       }));
       containerEl.createEl("p", { text: t("createToken") });
@@ -5687,7 +6336,7 @@ var GitSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
     containerEl.createEl("h3", { text: t("repository") });
     if (authStatus.isAuthenticated) {
       if (this.plugin.settings.repoOwner && this.plugin.settings.repoName) {
-        new import_obsidian4.Setting(containerEl).setName(t("currentRepository")).setDesc(`${this.plugin.settings.repoOwner}/${this.plugin.settings.repoName}`).addButton((button) => button.setButtonText(t("changeRepository")).onClick(() => {
+        new import_obsidian6.Setting(containerEl).setName(t("currentRepository")).setDesc(`${this.plugin.settings.repoOwner}/${this.plugin.settings.repoName}`).addButton((button) => button.setButtonText(t("changeRepository")).onClick(() => {
           const modal = new SelectRepoModal(
             this.plugin.app,
             this.plugin,
@@ -5696,7 +6345,7 @@ var GitSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
               this.plugin.settings.repoName = repo.name;
               this.plugin.saveSettings();
               this.display();
-              new import_obsidian4.Notice(t("repoSelected") + repo.full_name);
+              new import_obsidian6.Notice(t("repoSelected") + repo.full_name);
             }
           );
           modal.open();
@@ -5706,7 +6355,7 @@ var GitSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
           text: t("noRepoConfigured"),
           cls: "setting-item-description"
         });
-        new import_obsidian4.Setting(containerEl).setName(t("createNewRepo")).addButton((button) => button.setButtonText(t("create")).setCta().onClick(() => {
+        new import_obsidian6.Setting(containerEl).setName(t("createNewRepo")).addButton((button) => button.setButtonText(t("create")).setCta().onClick(() => {
           const modal = new CreateRepoModal(
             this.plugin.app,
             this.plugin,
@@ -5715,12 +6364,12 @@ var GitSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
               this.plugin.settings.repoName = repo.name;
               this.plugin.saveSettings();
               this.display();
-              new import_obsidian4.Notice(t("repoCreated") + repo.full_name);
+              new import_obsidian6.Notice(t("repoCreated") + repo.full_name);
             }
           );
           modal.open();
         }));
-        new import_obsidian4.Setting(containerEl).setName(t("selectExistingRepo")).addButton((button) => button.setButtonText(t("select")).onClick(() => {
+        new import_obsidian6.Setting(containerEl).setName(t("selectExistingRepo")).addButton((button) => button.setButtonText(t("select")).onClick(() => {
           const modal = new SelectRepoModal(
             this.plugin.app,
             this.plugin,
@@ -5729,7 +6378,7 @@ var GitSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
               this.plugin.settings.repoName = repo.name;
               this.plugin.saveSettings();
               this.display();
-              new import_obsidian4.Notice(t("repoSelected") + repo.full_name);
+              new import_obsidian6.Notice(t("repoSelected") + repo.full_name);
             }
           );
           modal.open();
@@ -5742,18 +6391,18 @@ var GitSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
       });
     }
     containerEl.createEl("h3", { text: t("syncSettings") });
-    new import_obsidian4.Setting(containerEl).setName(t("autoSync")).setDesc(t("autoSyncDesc")).addToggle((toggle) => toggle.setValue(this.plugin.settings.autoSync).onChange(async (value) => {
+    new import_obsidian6.Setting(containerEl).setName(t("autoSync")).setDesc(t("autoSyncDesc")).addToggle((toggle) => toggle.setValue(this.plugin.settings.autoSync).onChange(async (value) => {
       this.plugin.settings.autoSync = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian4.Setting(containerEl).setName(t("fileSizeLimit")).setDesc(t("fileSizeLimitDesc")).addText((text) => text.setValue(String(this.plugin.settings.fileSizeLimit)).onChange(async (value) => {
+    new import_obsidian6.Setting(containerEl).setName(t("fileSizeLimit")).setDesc(t("fileSizeLimitDesc")).addText((text) => text.setValue(String(this.plugin.settings.fileSizeLimit)).onChange(async (value) => {
       const num = parseInt(value);
       if (!isNaN(num) && num <= 100) {
         this.plugin.settings.fileSizeLimit = num;
         await this.plugin.saveSettings();
       }
     }));
-    new import_obsidian4.Setting(containerEl).setName(t("syncOnStartup")).setDesc(t("syncOnStartupDesc")).addToggle((toggle) => toggle.setValue(this.plugin.settings.syncOnStartup).onChange(async (value) => {
+    new import_obsidian6.Setting(containerEl).setName(t("syncOnStartup")).setDesc(t("syncOnStartupDesc")).addToggle((toggle) => toggle.setValue(this.plugin.settings.syncOnStartup).onChange(async (value) => {
       this.plugin.settings.syncOnStartup = value;
       await this.plugin.saveSettings();
     }));
