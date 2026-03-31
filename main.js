@@ -4565,6 +4565,7 @@ var TEMP_FILE_NAMES = [
 var SyncEngine = class {
   constructor(plugin) {
     this.client = null;
+    this.isDownloading = false;
     this.plugin = plugin;
     this.vault = plugin.app.vault;
   }
@@ -4784,9 +4785,19 @@ var SyncEngine = class {
             return false;
           }
         }
-        await this.vault.modifyBinary(localFile, content);
+        this.isDownloading = true;
+        try {
+          await this.vault.modifyBinary(localFile, content);
+        } finally {
+          this.isDownloading = false;
+        }
       } else {
-        await this.vault.createBinary(path, content);
+        this.isDownloading = true;
+        try {
+          await this.vault.createBinary(path, content);
+        } finally {
+          this.isDownloading = false;
+        }
       }
       await this.plugin.stateManager.updateFileSynced(
         path,
@@ -6000,6 +6011,8 @@ var GitSyncPlugin = class extends import_obsidian6.Plugin {
     this.isAuthenticated = false;
     // 文件变更 debounce 定时器
     this.fileChangeTimer = null;
+    // 同步锁：防止 bidirectionalSync/fullSync/pullFromRemote 与 syncPendingFiles 并发执行
+    this.isSyncing = false;
   }
   async onload() {
     await this.loadSettings();
@@ -6101,6 +6114,9 @@ var GitSyncPlugin = class extends import_obsidian6.Plugin {
   }
   // 处理文件变更
   handleFileChange(file) {
+    if (this.syncEngine.isDownloading) {
+      return;
+    }
     if (!this.settings.autoSync) {
       return;
     }
@@ -6195,6 +6211,9 @@ var GitSyncPlugin = class extends import_obsidian6.Plugin {
   }
   // 同步待同步文件
   async syncPendingFiles() {
+    if (this.isSyncing) {
+      return;
+    }
     if (!this.isAuthenticated || !this.settings.repoOwner || !this.settings.repoName) {
       return;
     }
@@ -6207,21 +6226,26 @@ var GitSyncPlugin = class extends import_obsidian6.Plugin {
     if (filesToSync.length === 0) {
       return;
     }
+    this.isSyncing = true;
     this.statusBar.startSyncing();
     let successCount = 0;
     let errorCount = 0;
-    for (const filePath of filesToSync) {
-      const file = this.app.vault.getAbstractFileByPath(filePath);
-      if (file instanceof import_obsidian6.TFile) {
-        const success = await this.syncEngine.uploadSingleFile(file);
-        if (success) {
-          successCount++;
+    try {
+      for (const filePath of filesToSync) {
+        const file = this.app.vault.getAbstractFileByPath(filePath);
+        if (file instanceof import_obsidian6.TFile) {
+          const success = await this.syncEngine.uploadSingleFile(file);
+          if (success) {
+            successCount++;
+          } else {
+            errorCount++;
+          }
         } else {
-          errorCount++;
+          this.stateManager.clearFileState(filePath);
         }
-      } else {
-        this.stateManager.clearFileState(filePath);
       }
+    } finally {
+      this.isSyncing = false;
     }
     this.statusBar.endSync(errorCount === 0);
     if (successCount > 0) {
@@ -6250,7 +6274,12 @@ var GitSyncPlugin = class extends import_obsidian6.Plugin {
       return;
     }
     this.syncEngine.setClient(client);
-    await this.syncEngine.fullSync();
+    this.isSyncing = true;
+    try {
+      await this.syncEngine.fullSync();
+    } finally {
+      this.isSyncing = false;
+    }
   }
   async pullFromRemote() {
     console.log("Pull from remote triggered");
@@ -6268,7 +6297,12 @@ var GitSyncPlugin = class extends import_obsidian6.Plugin {
       return;
     }
     this.syncEngine.setClient(client);
-    await this.syncEngine.pullFromRemote();
+    this.isSyncing = true;
+    try {
+      await this.syncEngine.pullFromRemote();
+    } finally {
+      this.isSyncing = false;
+    }
   }
   async bidirectionalSync() {
     console.log("Bidirectional sync triggered");
@@ -6286,7 +6320,12 @@ var GitSyncPlugin = class extends import_obsidian6.Plugin {
       return;
     }
     this.syncEngine.setClient(client);
-    await this.syncEngine.bidirectionalSync();
+    this.isSyncing = true;
+    try {
+      await this.syncEngine.bidirectionalSync();
+    } finally {
+      this.isSyncing = false;
+    }
   }
 };
 var GitSyncSettingTab = class extends import_obsidian6.PluginSettingTab {
