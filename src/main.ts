@@ -258,6 +258,11 @@ export default class GitSyncPlugin extends Plugin {
 
     // 处理文件删除
     handleFileDelete(file: TFile) {
+        // 双向同步正在删除本地文件，跳过以防止触发 deleteRemoteFile 连锁操作
+        if (this.syncEngine.isDeletingLocalFiles) {
+            return;
+        }
+
         if (!this.settings.autoSync || !this.isAuthenticated) {
             return;
         }

@@ -3880,7 +3880,8 @@ var GitHubClient = class {
     }
   }
   // 获取文件内容
-  async getFile(options) {
+  // blobSha: 文件的 git blob SHA，用于大文件（>1MB）回退到 Git Blob API
+  async getFile(options, blobSha) {
     if (!this.octokit) return null;
     try {
       const { data } = await this.octokit.repos.getContent({
@@ -3906,7 +3907,34 @@ var GitHubClient = class {
         encoding: data.encoding
       };
     } catch (error) {
-      console.error("Failed to get file:", error);
+      if (error.status === 403 && blobSha) {
+        try {
+          const { data } = await this.octokit.git.getBlob({
+            owner: options.owner,
+            repo: options.repo,
+            file_sha: blobSha
+          });
+          return {
+            name: options.path.split("/").pop() || "",
+            path: options.path,
+            sha: data.sha,
+            size: data.size,
+            url: "",
+            html_url: "",
+            git_url: "",
+            download_url: "",
+            type: "file",
+            content: data.content,
+            encoding: data.encoding
+          };
+        } catch (blobError) {
+          console.error("Failed to get file blob:", blobError);
+          return null;
+        }
+      }
+      if (error.status !== 404) {
+        console.error("Failed to get file:", error);
+      }
       return null;
     }
   }
@@ -4566,6 +4594,7 @@ var SyncEngine = class {
   constructor(plugin) {
     this.client = null;
     this.isDownloading = false;
+    this.isDeletingLocalFiles = false;
     this.plugin = plugin;
     this.vault = plugin.app.vault;
   }
@@ -4748,7 +4777,7 @@ var SyncEngine = class {
     return size <= limitBytes;
   }
   // 从远程拉取单个文件
-  async downloadFile(path, forceOverwrite = false) {
+  async downloadFile(path, forceOverwrite = false, blobSha) {
     if (!this.client) {
       console.error("Not authenticated");
       return false;
@@ -4763,7 +4792,7 @@ var SyncEngine = class {
         owner: repoOwner,
         repo: repoName,
         path
-      });
+      }, blobSha);
       if (!remoteFile || !remoteFile.content) {
         console.log("Remote file not found:", path);
         return false;
@@ -4978,7 +5007,7 @@ var SyncEngine = class {
           result.skippedFiles++;
           continue;
         }
-        const success = await this.downloadFile(remoteFile.path, false);
+        const success = await this.downloadFile(remoteFile.path, false, remoteFile.sha);
         if (success) {
           result.uploadedFiles++;
         }
@@ -4996,32 +5025,41 @@ var SyncEngine = class {
         };
       }
       const localFiles = this.getAllFiles();
-      for (const localFile of localFiles) {
-        if (this.shouldExcludeFile(localFile.path)) {
-          continue;
-        }
-        const fileName = localFile.basename;
-        if (tempFileNames.some(
-          (tempName) => fileName === tempName || fileName.startsWith(tempName + "-")
-        )) {
-          continue;
-        }
-        if (!remoteFileMap.has(localFile.path)) {
-          try {
-            await this.vault.delete(localFile);
-            result.deletedFiles++;
-            console.log("Deleted local file (remote deleted):", localFile.path);
-          } catch (error) {
-            result.errorFiles++;
-            result.errors.push(`Failed to delete local: ${localFile.path}`);
+      this.isDeletingLocalFiles = true;
+      try {
+        for (const localFile of localFiles) {
+          if (this.shouldExcludeFile(localFile.path)) {
+            continue;
+          }
+          const fileName = localFile.basename;
+          if (tempFileNames.some(
+            (tempName) => fileName === tempName || fileName.startsWith(tempName + "-")
+          )) {
+            continue;
+          }
+          if (!remoteFileMap.has(localFile.path)) {
+            const fileState = this.plugin.stateManager.getFileState(localFile.path);
+            if (fileState && fileState.status === "synced") {
+              try {
+                await this.vault.delete(localFile);
+                result.deletedFiles++;
+                console.log("Deleted local file (remote deleted):", localFile.path);
+              } catch (error) {
+                result.errorFiles++;
+                result.errors.push(`Failed to delete local: ${localFile.path}`);
+              }
+            }
           }
         }
+      } finally {
+        this.isDeletingLocalFiles = false;
       }
+      const currentLocalFiles = this.getAllFiles();
       let uploadCount = 0;
       let uploadErrorCount = 0;
-      const totalLocalFiles = localFiles.length;
+      const totalLocalFiles = currentLocalFiles.length;
       let processedLocalFiles = 0;
-      for (const localFile of localFiles) {
+      for (const localFile of currentLocalFiles) {
         processedLocalFiles++;
         if (this.plugin.statusBar) {
           this.plugin.statusBar.updateProgress(processedLocalFiles, totalLocalFiles, "push");
@@ -6151,6 +6189,9 @@ var GitSyncPlugin = class extends import_obsidian6.Plugin {
   }
   // 处理文件删除
   handleFileDelete(file) {
+    if (this.syncEngine.isDeletingLocalFiles) {
+      return;
+    }
     if (!this.settings.autoSync || !this.isAuthenticated) {
       return;
     }

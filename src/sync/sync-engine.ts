@@ -30,6 +30,7 @@ export class SyncEngine {
     vault: Vault;
     client: GitHubClient | null = null;
     isDownloading: boolean = false;
+    isDeletingLocalFiles: boolean = false;
 
     constructor(plugin: GitSyncPlugin) {
         this.plugin = plugin;
@@ -265,7 +266,7 @@ export class SyncEngine {
     }
 
     // 从远程拉取单个文件
-    async downloadFile(path: string, forceOverwrite: boolean = false): Promise<boolean> {
+    async downloadFile(path: string, forceOverwrite: boolean = false, blobSha?: string): Promise<boolean> {
         if (!this.client) {
             console.error('Not authenticated');
             return false;
@@ -278,12 +279,12 @@ export class SyncEngine {
         }
 
         try {
-            // 获取远程文件
+            // 获取远程文件（传入 blobSha 以支持大文件回退到 Git Blob API）
             const remoteFile = await this.client.getFile({
                 owner: repoOwner,
                 repo: repoName,
                 path: path
-            });
+            }, blobSha);
 
             if (!remoteFile || !remoteFile.content) {
                 console.log('Remote file not found:', path);
@@ -572,8 +573,8 @@ export class SyncEngine {
                     continue;
                 }
 
-                // 下载文件（不强制覆盖，检测冲突）
-                const success = await this.downloadFile(remoteFile.path, false);
+                // 下载文件（不强制覆盖，检测冲突；传入 sha 以支持大文件）
+                const success = await this.downloadFile(remoteFile.path, false, remoteFile.sha);
                 if (success) {
                     result.uploadedFiles++;
                 }
@@ -597,40 +598,53 @@ export class SyncEngine {
             // 第四步：检查本地是否有远程不存在的文件（远程已删除）
             const localFiles = this.getAllFiles();
 
-            for (const localFile of localFiles) {
-                // 跳过排除规则
-                if (this.shouldExcludeFile(localFile.path)) {
-                    continue;
-                }
+            // 设置标志，防止 vault.on('delete') 事件触发 deleteRemoteFile 连锁操作
+            this.isDeletingLocalFiles = true;
+            try {
+                for (const localFile of localFiles) {
+                    // 跳过排除规则
+                    if (this.shouldExcludeFile(localFile.path)) {
+                        continue;
+                    }
 
-                // 跳过临时文件名
-                const fileName = localFile.basename;
-                if (tempFileNames.some(tempName =>
-                    fileName === tempName || fileName.startsWith(tempName + '-')
-                )) {
-                    continue;
-                }
+                    // 跳过临时文件名
+                    const fileName = localFile.basename;
+                    if (tempFileNames.some(tempName =>
+                        fileName === tempName || fileName.startsWith(tempName + '-')
+                    )) {
+                        continue;
+                    }
 
-                // 如果本地存在但远程不存在，删除本地文件
-                if (!remoteFileMap.has(localFile.path)) {
-                    try {
-                        await this.vault.delete(localFile);
-                        result.deletedFiles++;
-                        console.log('Deleted local file (remote deleted):', localFile.path);
-                    } catch (error) {
-                        result.errorFiles++;
-                        result.errors.push(`Failed to delete local: ${localFile.path}`);
+                    // 如果本地存在但远程不存在
+                    if (!remoteFileMap.has(localFile.path)) {
+                        // 只删除曾经同步过的文件（远程确实删了它）
+                        // 从未同步过的文件（本地新建未上传）不能删除
+                        const fileState = this.plugin.stateManager.getFileState(localFile.path);
+                        if (fileState && fileState.status === 'synced') {
+                            try {
+                                await this.vault.delete(localFile);
+                                result.deletedFiles++;
+                                console.log('Deleted local file (remote deleted):', localFile.path);
+                            } catch (error) {
+                                result.errorFiles++;
+                                result.errors.push(`Failed to delete local: ${localFile.path}`);
+                            }
+                        }
                     }
                 }
+            } finally {
+                this.isDeletingLocalFiles = false;
             }
 
             // 第五步：推送本地变更（使用已有的 SHA 映射减少 API 调用）
+            // 重新获取本地文件列表，避免使用第四步删除操作后的过期快照（防止 ENOENT）
+            const currentLocalFiles = this.getAllFiles();
             let uploadCount = 0;
             let uploadErrorCount = 0;
-            const totalLocalFiles = localFiles.length;
+            const totalLocalFiles = currentLocalFiles.length;
             let processedLocalFiles = 0;
 
-            for (const localFile of localFiles) {
+            for (const localFile of currentLocalFiles) {
                 processedLocalFiles++;
 
                 // 更新进度（上传阶段）
