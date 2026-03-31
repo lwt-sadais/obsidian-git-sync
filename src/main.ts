@@ -3,7 +3,7 @@ import { AuthManager } from './auth/auth-manager';
 import { encryptToken, decryptToken, isEncrypted } from './auth/encryption';
 import { AuthStatus, GitHubRepository } from './api/types';
 import { RepoManager, CreateRepoModal, SelectRepoModal } from './ui/repo-manager';
-import { SyncEngine } from './sync/sync-engine';
+import { SyncEngine, TEMP_FILE_NAMES } from './sync/sync-engine';
 import { StateManager } from './sync/state-manager';
 import { StatusBarManager } from './ui/status-bar';
 import { t } from './i18n';
@@ -57,6 +57,9 @@ export default class GitSyncPlugin extends Plugin {
 
     // 文件变更 debounce 定时器
     fileChangeTimer: number | null = null;
+
+    // 同步锁：防止 bidirectionalSync/fullSync/pullFromRemote 与 syncPendingFiles 并发执行
+    isSyncing: boolean = false;
 
     async onload() {
         await this.loadSettings();
@@ -194,19 +197,13 @@ export default class GitSyncPlugin extends Plugin {
         );
     }
 
-    // 临时文件名列表（新建笔记时的默认名称，需要过滤）
-    private static TEMP_FILE_NAMES = [
-        '未命名',
-        'Untitled',
-        'Untitled-1',
-        'Untitled-2',
-        'Untitled-3',
-        'New note',
-        '新笔记'
-    ];
-
     // 处理文件变更
     handleFileChange(file: TFile) {
+        // 同步引擎正在下载文件，跳过以防止下载触发重复上传
+        if (this.syncEngine.isDownloading) {
+            return;
+        }
+
         // 检查是否启用自动同步
         if (!this.settings.autoSync) {
             return;
@@ -229,7 +226,7 @@ export default class GitSyncPlugin extends Plugin {
 
         // 检查是否为临时文件名（新建笔记时的默认名称，直接跳过）
         const fileName = file.basename;
-        if (GitSyncPlugin.TEMP_FILE_NAMES.some(tempName =>
+        if (TEMP_FILE_NAMES.some(tempName =>
             fileName === tempName || fileName.startsWith(tempName + '-')
         )) {
             // 跳过临时文件名，不同步
@@ -270,7 +267,7 @@ export default class GitSyncPlugin extends Plugin {
 
         // 检查是否为临时文件名（如果是，不需要删除远程文件）
         const fileName = file.basename;
-        const wasTempFile = GitSyncPlugin.TEMP_FILE_NAMES.some(tempName =>
+        const wasTempFile = TEMP_FILE_NAMES.some(tempName =>
             fileName === tempName || fileName.startsWith(tempName + '-')
         );
 
@@ -315,7 +312,7 @@ export default class GitSyncPlugin extends Plugin {
 
         // 检查旧路径是否为临时文件名（如果是，不需要删除远程文件）
         const oldFileName = this.getFileNameFromPath(oldPath);
-        const wasTempFile = GitSyncPlugin.TEMP_FILE_NAMES.some(tempName =>
+        const wasTempFile = TEMP_FILE_NAMES.some(tempName =>
             oldFileName === tempName || oldFileName.startsWith(tempName + '-')
         );
 
@@ -327,7 +324,7 @@ export default class GitSyncPlugin extends Plugin {
 
         // 检查新文件名是否为临时名称
         const fileName = file.basename;
-        if (GitSyncPlugin.TEMP_FILE_NAMES.some(tempName =>
+        if (TEMP_FILE_NAMES.some(tempName =>
             fileName === tempName || fileName.startsWith(tempName + '-')
         )) {
             // 新名称仍然是临时名称，跳过
@@ -350,6 +347,11 @@ export default class GitSyncPlugin extends Plugin {
 
     // 同步待同步文件
     async syncPendingFiles() {
+        // 有大同步正在运行，跳过本次，避免并发导致 SHA 冲突
+        if (this.isSyncing) {
+            return;
+        }
+
         if (!this.isAuthenticated || !this.settings.repoOwner || !this.settings.repoName) {
             return;
         }
@@ -367,25 +369,31 @@ export default class GitSyncPlugin extends Plugin {
             return;
         }
 
+        this.isSyncing = true;
+
         // 开始同步
         this.statusBar.startSyncing();
 
         let successCount = 0;
         let errorCount = 0;
 
-        for (const filePath of filesToSync) {
-            const file = this.app.vault.getAbstractFileByPath(filePath);
-            if (file instanceof TFile) {
-                const success = await this.syncEngine.uploadSingleFile(file);
-                if (success) {
-                    successCount++;
+        try {
+            for (const filePath of filesToSync) {
+                const file = this.app.vault.getAbstractFileByPath(filePath);
+                if (file instanceof TFile) {
+                    const success = await this.syncEngine.uploadSingleFile(file);
+                    if (success) {
+                        successCount++;
+                    } else {
+                        errorCount++;
+                    }
                 } else {
-                    errorCount++;
+                    // 文件已不存在，清除状态
+                    this.stateManager.clearFileState(filePath);
                 }
-            } else {
-                // 文件已不存在，清除状态
-                this.stateManager.clearFileState(filePath);
             }
+        } finally {
+            this.isSyncing = false;
         }
 
         // 结束同步
@@ -425,7 +433,12 @@ export default class GitSyncPlugin extends Plugin {
         }
 
         this.syncEngine.setClient(client);
-        await this.syncEngine.fullSync();
+        this.isSyncing = true;
+        try {
+            await this.syncEngine.fullSync();
+        } finally {
+            this.isSyncing = false;
+        }
     }
 
     async pullFromRemote() {
@@ -448,7 +461,12 @@ export default class GitSyncPlugin extends Plugin {
         }
 
         this.syncEngine.setClient(client);
-        await this.syncEngine.pullFromRemote();
+        this.isSyncing = true;
+        try {
+            await this.syncEngine.pullFromRemote();
+        } finally {
+            this.isSyncing = false;
+        }
     }
 
     async bidirectionalSync() {
@@ -471,7 +489,12 @@ export default class GitSyncPlugin extends Plugin {
         }
 
         this.syncEngine.setClient(client);
-        await this.syncEngine.bidirectionalSync();
+        this.isSyncing = true;
+        try {
+            await this.syncEngine.bidirectionalSync();
+        } finally {
+            this.isSyncing = false;
+        }
     }
 }
 

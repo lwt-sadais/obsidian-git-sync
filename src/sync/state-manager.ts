@@ -45,7 +45,7 @@ export class StateManager {
     // 保存状态
     async saveState(): Promise<void> {
         try {
-            const data = await this.plugin.loadData();
+            const data = await this.plugin.loadData() || {};
             data.syncState = this.state;
             await this.plugin.saveData(data);
         } catch (error) {

@@ -1,23 +1,19 @@
-import { Vault, TFile, TFolder, Notice, App } from 'obsidian';
+import { Vault, TFile, TFolder, Notice } from 'obsidian';
 import { GitHubClient } from '../api/github';
 import { GitHubFile } from '../api/types';
 import GitSyncPlugin from '../main';
 import { t } from '../i18n';
 
-// 同步状态
-export interface SyncState {
-    lastSyncTime: string;
-    lastCommitSha: string;
-    fileStates: Map<string, FileSyncState>;
-}
-
-// 文件同步状态
-export interface FileSyncState {
-    localPath: string;
-    remoteSha: string;
-    localModified: string;
-    status: 'synced' | 'pending' | 'conflict';
-}
+// 临时文件名列表（新建笔记时的默认名称，需要过滤）
+export const TEMP_FILE_NAMES = [
+    '未命名',
+    'Untitled',
+    'Untitled-1',
+    'Untitled-2',
+    'Untitled-3',
+    'New note',
+    '新笔记'
+];
 
 // 同步结果
 export interface SyncResult {
@@ -33,6 +29,7 @@ export class SyncEngine {
     plugin: GitSyncPlugin;
     vault: Vault;
     client: GitHubClient | null = null;
+    isDownloading: boolean = false;
 
     constructor(plugin: GitSyncPlugin) {
         this.plugin = plugin;
@@ -87,11 +84,19 @@ export class SyncEngine {
             errors: []
         };
 
+        // 先获取远程所有文件的 SHA 映射（减少后续 API 调用）
+        let remoteFileMap = new Map<string, { sha: string }>();
+        try {
+            const remoteFiles = await this.client.getAllFiles(repoOwner, repoName);
+            for (const file of remoteFiles) {
+                remoteFileMap.set(file.path, { sha: file.sha });
+            }
+        } catch (error) {
+            console.warn('Failed to get remote files, will upload without SHA check:', error);
+        }
+
         // 获取所有文件
         const allFiles = this.getAllFiles();
-
-        // 临时文件名列表（新建笔记时的默认名称，需要过滤）
-        const tempFileNames = ['未命名', 'Untitled', 'Untitled-1', 'Untitled-2', 'Untitled-3', 'New note', '新笔记'];
 
         // 过滤文件
         const filteredFiles = allFiles.filter(file => {
@@ -111,9 +116,8 @@ export class SyncEngine {
             }
 
             // 检查是否为临时文件名
-            const fileName = file.basename;
-            if (tempFileNames.some(tempName =>
-                fileName === tempName || fileName.startsWith(tempName + '-')
+            if (TEMP_FILE_NAMES.some(tempName =>
+                file.basename === tempName || file.basename.startsWith(tempName + '-')
             )) {
                 result.skippedFiles++;
                 return false;
@@ -131,13 +135,9 @@ export class SyncEngine {
         for (const file of filteredFiles) {
             processedFiles++;
 
-            // 更新进度通知
-            if (processedFiles % 10 === 0 || processedFiles === totalFiles) {
-                new Notice(t('syncingFiles', { current: processedFiles, total: totalFiles }));
-                // 更新状态栏进度
-                if (this.plugin.statusBar) {
-                    this.plugin.statusBar.updateProgress(processedFiles, totalFiles);
-                }
+            // 更新状态栏进度（每个文件都更新）
+            if (this.plugin.statusBar) {
+                this.plugin.statusBar.updateProgress(processedFiles, totalFiles, 'push');
             }
 
             // 检查文件大小
@@ -152,25 +152,14 @@ export class SyncEngine {
                 const content = await this.vault.readBinary(file);
                 const base64Content = this.arrayBufferToBase64(content);
 
-                // 先检查远程是否已存在该文件，获取其 SHA
-                let existingSha: string | undefined = undefined;
-                const existingFile = await this.client.getFile({
-                    owner: repoOwner,
-                    repo: repoName,
-                    path: file.path
-                });
-
-                if (existingFile) {
-                    existingSha = existingFile.sha;
-                }
-
+                // 使用已有的远程 SHA 映射（减少 API 调用）
                 const uploadResult = await this.client.uploadFile({
                     owner: repoOwner,
                     repo: repoName,
                     path: file.path,
-                    message: existingSha ? `Update ${file.path}` : `Upload ${file.path}`,
+                    message: `Upload ${file.path}`,
                     content: base64Content,
-                    sha: existingSha
+                    sha: remoteFileMap.get(file.path)?.sha
                 });
 
                 if (uploadResult) {
@@ -276,7 +265,7 @@ export class SyncEngine {
     }
 
     // 从远程拉取单个文件
-    async downloadFile(path: string): Promise<boolean> {
+    async downloadFile(path: string, forceOverwrite: boolean = false): Promise<boolean> {
         if (!this.client) {
             console.error('Not authenticated');
             return false;
@@ -308,28 +297,41 @@ export class SyncEngine {
             const localFile = this.vault.getAbstractFileByPath(path);
 
             if (localFile instanceof TFile) {
-                // 本地文件存在，检查是否需要更新
-                const localModified = new Date(localFile.stat.mtime);
-                const fileState = this.plugin.stateManager.getFileState(path);
+                // 本地文件存在
+                if (!forceOverwrite) {
+                    // 非强制模式，检查是否需要更新
+                    const localModified = new Date(localFile.stat.mtime);
+                    const fileState = this.plugin.stateManager.getFileState(path);
 
-                // 如果本地修改时间晚于同步记录，可能存在冲突
-                if (fileState && localModified > new Date(fileState.localModified)) {
-                    // 本地有修改，标记为冲突
-                    await this.plugin.stateManager.markFileConflict(path, localModified.toISOString());
-                    if (this.plugin.statusBar) {
-                        this.plugin.statusBar.setConflictCount(
-                            this.plugin.stateManager.getConflictFiles().length
-                        );
+                    // 如果本地修改时间晚于同步记录，可能存在冲突
+                    if (fileState && localModified > new Date(fileState.localModified)) {
+                        // 本地有修改，标记为冲突
+                        await this.plugin.stateManager.markFileConflict(path, localModified.toISOString());
+                        if (this.plugin.statusBar) {
+                            this.plugin.statusBar.setConflictCount(
+                                this.plugin.stateManager.getConflictFiles().length
+                            );
+                        }
+                        new Notice(t('conflictDetected', { path }));
+                        return false;
                     }
-                    new Notice(t('conflictDetected', { path }));
-                    return false;
                 }
 
-                // 更新本地文件
-                await this.vault.modifyBinary(localFile, content);
+                // 更新本地文件（设置标志防止 vault 事件触发重复上传）
+                this.isDownloading = true;
+                try {
+                    await this.vault.modifyBinary(localFile, content);
+                } finally {
+                    this.isDownloading = false;
+                }
             } else {
                 // 本地文件不存在，创建新文件
-                await this.vault.createBinary(path, content);
+                this.isDownloading = true;
+                try {
+                    await this.vault.createBinary(path, content);
+                } finally {
+                    this.isDownloading = false;
+                }
             }
 
             // 更新状态
@@ -398,12 +400,9 @@ export class SyncEngine {
             for (const remoteFile of remoteFiles) {
                 processedFiles++;
 
-                // 更新进度
-                if (processedFiles % 10 === 0 || processedFiles === totalFiles) {
-                    new Notice(t('syncingFiles', { current: processedFiles, total: totalFiles }));
-                    if (this.plugin.statusBar) {
-                        this.plugin.statusBar.updateProgress(processedFiles, totalFiles);
-                    }
+                // 更新状态栏进度（每个文件都更新）
+                if (this.plugin.statusBar) {
+                    this.plugin.statusBar.updateProgress(processedFiles, totalFiles, 'pull');
                 }
 
                 // 跳过 .git 目录和排除路径
@@ -421,8 +420,8 @@ export class SyncEngine {
                     continue;
                 }
 
-                // 下载文件
-                const success = await this.downloadFile(remoteFile.path);
+                // 下载文件（强制覆盖本地，因为是"以远程为准"）
+                const success = await this.downloadFile(remoteFile.path, true);
                 if (success) {
                     result.uploadedFiles++;
                 } else {
@@ -438,7 +437,7 @@ export class SyncEngine {
 
             // 检查本地是否有远程不存在的文件（远程已删除）
             const localFiles = this.getAllFiles();
-            const tempFileNames = ['未命名', 'Untitled', 'Untitled-1', 'Untitled-2', 'Untitled-3', 'New note', '新笔记'];
+            const tempFileNames = TEMP_FILE_NAMES;
 
             for (const localFile of localFiles) {
                 // 跳过排除规则
@@ -508,87 +507,257 @@ export class SyncEngine {
             };
         }
 
-        // 第一步：拉取远程变更
-        const pullResult = await this.pullFromRemote();
-
-        // 检查是否有冲突
-        const conflicts = this.plugin.stateManager.getConflictFiles();
-        if (conflicts.length > 0) {
-            new Notice(t('conflictsPaused', { count: conflicts.length }));
-            if (this.plugin.statusBar) {
-                this.plugin.statusBar.setConflictCount(conflicts.length);
-            }
+        const { repoOwner, repoName } = this.plugin.settings;
+        if (!repoOwner || !repoName) {
             return {
-                ...pullResult,
-                errors: [...pullResult.errors, `${conflicts.length} conflicts detected`]
+                success: false,
+                uploadedFiles: 0,
+                skippedFiles: 0,
+                errorFiles: 0,
+                deletedFiles: 0,
+                errors: [t('repoNotConfigured')]
             };
         }
 
-        // 第二步：扫描本地所有文件，推送需要同步的文件
-        const { repoOwner, repoName, excludedPaths, excludedExtensions, fileSizeLimit } = this.plugin.settings;
-        const tempFileNames = ['未命名', 'Untitled', 'Untitled-1', 'Untitled-2', 'Untitled-3', 'New note', '新笔记'];
-
-        // 获取远程所有文件的 SHA 映射
-        const remoteFiles = await this.client.getAllFiles(repoOwner, repoName);
-        const remoteFileMap = new Map<string, string>();
-        for (const file of remoteFiles) {
-            remoteFileMap.set(file.path, file.sha);
+        // 开始同步
+        if (this.plugin.statusBar) {
+            this.plugin.statusBar.startSyncing();
         }
 
-        // 获取本地所有文件
-        const localFiles = this.getAllFiles();
-        let uploadCount = 0;
-        let uploadErrorCount = 0;
+        new Notice(t('startingSync'));
+        console.log('Starting bidirectional sync...');
 
-        for (const localFile of localFiles) {
-            // 跳过排除规则
-            if (this.shouldExcludeFile(localFile.path)) {
-                continue;
+        const result: SyncResult = {
+            success: true,
+            uploadedFiles: 0,
+            skippedFiles: 0,
+            errorFiles: 0,
+            deletedFiles: 0,
+            errors: []
+        };
+
+        try {
+            // 第一步：获取远程所有文件
+            const remoteFiles = await this.client.getAllFiles(repoOwner, repoName);
+            const remoteFileMap = new Map<string, { sha: string; path: string }>();
+            for (const file of remoteFiles) {
+                remoteFileMap.set(file.path, { sha: file.sha, path: file.path });
             }
 
-            // 跳过临时文件名
-            const fileName = localFile.basename;
-            if (tempFileNames.some(tempName =>
-                fileName === tempName || fileName.startsWith(tempName + '-')
-            )) {
-                continue;
-            }
+            // 第二步：拉取远程变更（检测冲突，不强制覆盖）
+            const tempFileNames = TEMP_FILE_NAMES;
+            const totalRemoteFiles = remoteFiles.length;
+            let processedRemoteFiles = 0;
 
-            // 跳过大文件
-            if (!this.isFileSizeOk(localFile.stat.size)) {
-                continue;
-            }
+            for (const remoteFile of remoteFiles) {
+                processedRemoteFiles++;
 
-            // 获取远程 SHA
-            const remoteSha = remoteFileMap.get(localFile.path);
-            const fileState = this.plugin.stateManager.getFileState(localFile.path);
+                // 更新进度（拉取阶段）
+                if (this.plugin.statusBar) {
+                    this.plugin.statusBar.updateProgress(processedRemoteFiles, totalRemoteFiles, 'pull');
+                }
 
-            // 判断是否需要上传：
-            // 1. 远程不存在该文件
-            // 2. 本地有修改（修改时间晚于上次同步记录）
-            const needsUpload = !remoteSha ||
-                !fileState ||
-                new Date(localFile.stat.mtime) > new Date(fileState.localModified);
+                // 跳过 .git 目录和排除路径
+                if (remoteFile.path.startsWith('.git/') ||
+                    remoteFile.path === '.gitignore' ||
+                    remoteFile.path === 'README.md' ||
+                    remoteFile.path === 'LICENSE') {
+                    result.skippedFiles++;
+                    continue;
+                }
 
-            if (needsUpload) {
-                const success = await this.uploadSingleFile(localFile);
+                // 检查排除规则
+                if (this.shouldExcludeFile(remoteFile.path)) {
+                    result.skippedFiles++;
+                    continue;
+                }
+
+                // 下载文件（不强制覆盖，检测冲突）
+                const success = await this.downloadFile(remoteFile.path, false);
                 if (success) {
-                    uploadCount++;
-                } else {
-                    uploadErrorCount++;
+                    result.uploadedFiles++;
+                }
+                // 冲突时不计入错误，由后续流程处理
+            }
+
+            // 第三步：检查是否有冲突
+            const conflicts = this.plugin.stateManager.getConflictFiles();
+            if (conflicts.length > 0) {
+                new Notice(t('conflictsPaused', { count: conflicts.length }));
+                if (this.plugin.statusBar) {
+                    this.plugin.statusBar.setConflictCount(conflicts.length);
+                    this.plugin.statusBar.endSync(false);
+                }
+                return {
+                    ...result,
+                    errors: [...result.errors, `${conflicts.length} conflicts detected`]
+                };
+            }
+
+            // 第四步：检查本地是否有远程不存在的文件（远程已删除）
+            const localFiles = this.getAllFiles();
+
+            for (const localFile of localFiles) {
+                // 跳过排除规则
+                if (this.shouldExcludeFile(localFile.path)) {
+                    continue;
+                }
+
+                // 跳过临时文件名
+                const fileName = localFile.basename;
+                if (tempFileNames.some(tempName =>
+                    fileName === tempName || fileName.startsWith(tempName + '-')
+                )) {
+                    continue;
+                }
+
+                // 如果本地存在但远程不存在，删除本地文件
+                if (!remoteFileMap.has(localFile.path)) {
+                    try {
+                        await this.vault.delete(localFile);
+                        result.deletedFiles++;
+                        console.log('Deleted local file (remote deleted):', localFile.path);
+                    } catch (error) {
+                        result.errorFiles++;
+                        result.errors.push(`Failed to delete local: ${localFile.path}`);
+                    }
                 }
             }
+
+            // 第五步：推送本地变更（使用已有的 SHA 映射减少 API 调用）
+            let uploadCount = 0;
+            let uploadErrorCount = 0;
+            const totalLocalFiles = localFiles.length;
+            let processedLocalFiles = 0;
+
+            for (const localFile of localFiles) {
+                processedLocalFiles++;
+
+                // 更新进度（上传阶段）
+                if (this.plugin.statusBar) {
+                    this.plugin.statusBar.updateProgress(processedLocalFiles, totalLocalFiles, 'push');
+                }
+
+                // 跳过排除规则
+                if (this.shouldExcludeFile(localFile.path)) {
+                    continue;
+                }
+
+                // 跳过临时文件名
+                const fileName = localFile.basename;
+                if (tempFileNames.some(tempName =>
+                    fileName === tempName || fileName.startsWith(tempName + '-')
+                )) {
+                    continue;
+                }
+
+                // 跳过大文件
+                if (!this.isFileSizeOk(localFile.stat.size)) {
+                    continue;
+                }
+
+                // 获取远程 SHA
+                const remoteInfo = remoteFileMap.get(localFile.path);
+                const fileState = this.plugin.stateManager.getFileState(localFile.path);
+
+                // 判断是否需要上传：
+                // 1. 远程不存在该文件
+                // 2. 本地有修改（修改时间晚于上次同步记录）
+                const needsUpload = !remoteInfo ||
+                    !fileState ||
+                    new Date(localFile.stat.mtime) > new Date(fileState.localModified);
+
+                if (needsUpload) {
+                    const success = await this.uploadSingleFileWithSha(localFile, remoteInfo?.sha);
+                    if (success) {
+                        uploadCount++;
+                    } else {
+                        uploadErrorCount++;
+                    }
+                }
+            }
+
+            // 合并结果
+            result.uploadedFiles += uploadCount;
+            result.errorFiles += uploadErrorCount;
+
+            // 更新状态栏
+            if (this.plugin.statusBar) {
+                this.plugin.statusBar.endSync(result.errorFiles === 0);
+            }
+
+            const message = result.deletedFiles > 0
+                ? t('pullWithDeletes', { downloaded: result.uploadedFiles - uploadCount, deleted: result.deletedFiles })
+                : t('syncCompleted', { count: result.uploadedFiles });
+            new Notice(message);
+            console.log('Bidirectional sync completed:', result);
+
+            return result;
+        } catch (error) {
+            console.error('Bidirectional sync failed:', error);
+            if (this.plugin.statusBar) {
+                this.plugin.statusBar.endSync(false);
+            }
+            return {
+                success: false,
+                uploadedFiles: 0,
+                skippedFiles: 0,
+                errorFiles: 0,
+                deletedFiles: 0,
+                errors: [String(error)]
+            };
+        }
+    }
+
+    // 上传单个文件（使用已知的 SHA，减少 API 调用）
+    private async uploadSingleFileWithSha(file: TFile, knownRemoteSha?: string): Promise<boolean> {
+        if (!this.client) {
+            return false;
         }
 
-        // 合并结果
-        return {
-            success: pullResult.success && uploadErrorCount === 0,
-            uploadedFiles: pullResult.uploadedFiles + uploadCount,
-            skippedFiles: pullResult.skippedFiles,
-            errorFiles: pullResult.errorFiles + uploadErrorCount,
-            deletedFiles: pullResult.deletedFiles,
-            errors: pullResult.errors
-        };
+        const { repoOwner, repoName } = this.plugin.settings;
+        if (!repoOwner || !repoName) {
+            return false;
+        }
+
+        try {
+            const content = await this.vault.readBinary(file);
+            const base64Content = this.arrayBufferToBase64(content);
+
+            // 使用已知的 SHA（如果有），否则获取远程 SHA
+            let sha = knownRemoteSha;
+            if (sha === undefined) {
+                const existingFile = await this.client.getFile({
+                    owner: repoOwner,
+                    repo: repoName,
+                    path: file.path
+                });
+                sha = existingFile?.sha;
+            }
+
+            const uploadResult = await this.client.uploadFile({
+                owner: repoOwner,
+                repo: repoName,
+                path: file.path,
+                message: sha ? `Update ${file.path}` : `Upload ${file.path}`,
+                content: base64Content,
+                sha: sha
+            });
+
+            if (uploadResult) {
+                await this.plugin.stateManager.updateFileSynced(
+                    file.path,
+                    uploadResult.sha,
+                    new Date(file.stat.mtime).toISOString()
+                );
+                return true;
+            }
+
+            return false;
+        } catch (error) {
+            console.error('Failed to upload file:', file.path, error);
+            return false;
+        }
     }
 
     // 上传单个文件
@@ -597,7 +766,7 @@ export class SyncEngine {
             return false;
         }
 
-        const { repoOwner, repoName, fileSizeLimit } = this.plugin.settings;
+        const { repoOwner, repoName } = this.plugin.settings;
         if (!repoOwner || !repoName) {
             return false;
         }
@@ -608,10 +777,8 @@ export class SyncEngine {
         }
 
         // 检查是否为临时文件名
-        const tempFileNames = ['未命名', 'Untitled', 'Untitled-1', 'Untitled-2', 'Untitled-3', 'New note', '新笔记'];
-        const fileName = file.basename;
-        if (tempFileNames.some(tempName =>
-            fileName === tempName || fileName.startsWith(tempName + '-')
+        if (TEMP_FILE_NAMES.some(tempName =>
+            file.basename === tempName || file.basename.startsWith(tempName + '-')
         )) {
             console.log('Skipping temp file:', file.path);
             return false;
