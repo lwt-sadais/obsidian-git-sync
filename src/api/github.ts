@@ -124,7 +124,8 @@ export class GitHubClient {
     }
 
     // 获取文件内容
-    async getFile(options: GetFileOptions): Promise<GitHubFile | null> {
+    // blobSha: 文件的 git blob SHA，用于大文件（>1MB）回退到 Git Blob API
+    async getFile(options: GetFileOptions, blobSha?: string): Promise<GitHubFile | null> {
         if (!this.octokit) return null;
 
         try {
@@ -153,8 +154,37 @@ export class GitHubClient {
                 content: data.content,
                 encoding: data.encoding
             };
-        } catch (error) {
-            console.error('Failed to get file:', error);
+        } catch (error: any) {
+            // 文件超过 1MB，Content API 返回 403，改用 Git Blob API
+            if (error.status === 403 && blobSha) {
+                try {
+                    const { data } = await this.octokit.git.getBlob({
+                        owner: options.owner,
+                        repo: options.repo,
+                        file_sha: blobSha
+                    });
+                    return {
+                        name: options.path.split('/').pop() || '',
+                        path: options.path,
+                        sha: data.sha,
+                        size: data.size,
+                        url: '',
+                        html_url: '',
+                        git_url: '',
+                        download_url: '',
+                        type: 'file',
+                        content: data.content,
+                        encoding: data.encoding
+                    };
+                } catch (blobError) {
+                    console.error('Failed to get file blob:', blobError);
+                    return null;
+                }
+            }
+            // 404 表示文件不存在，是预期行为，不打印错误
+            if (error.status !== 404) {
+                console.error('Failed to get file:', error);
+            }
             return null;
         }
     }
