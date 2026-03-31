@@ -20,7 +20,6 @@ interface GitSyncSettings {
 
     // 同步设置
     autoSync: boolean;
-    syncInterval: number;
     fileSizeLimit: number;
     syncOnStartup: boolean;
 
@@ -36,7 +35,6 @@ const DEFAULT_SETTINGS: GitSyncSettings = {
     repoOwner: '',
     repoName: '',
     autoSync: true,
-    syncInterval: 10,
     fileSizeLimit: 100, // MB
     syncOnStartup: true,
     excludedPaths: [
@@ -57,8 +55,6 @@ export default class GitSyncPlugin extends Plugin {
     statusBar: StatusBarManager;
     isAuthenticated: boolean = false;
 
-    // 自动同步定时器
-    syncTimer: number | null = null;
     // 文件变更 debounce 定时器
     fileChangeTimer: number | null = null;
 
@@ -131,9 +127,6 @@ export default class GitSyncPlugin extends Plugin {
         // 注册文件变更监听
         this.registerFileWatcher();
 
-        // 注册自动同步定时器
-        this.registerAutoSync();
-
         // 启动时同步（如果配置了）
         if (this.settings.syncOnStartup && this.isAuthenticated && this.settings.repoOwner && this.settings.repoName) {
             // 延迟 2 秒后执行，避免阻塞 Obsidian 启动
@@ -147,10 +140,6 @@ export default class GitSyncPlugin extends Plugin {
 
     onunload() {
         // 清理定时器
-        if (this.syncTimer) {
-            window.clearInterval(this.syncTimer);
-            this.syncTimer = null;
-        }
         if (this.fileChangeTimer) {
             window.clearTimeout(this.fileChangeTimer);
             this.fileChangeTimer = null;
@@ -411,35 +400,6 @@ export default class GitSyncPlugin extends Plugin {
         this.statusBar.setPendingCount(pendingCount);
     }
 
-    // 注册自动同步定时器
-    registerAutoSync() {
-        if (!this.settings.autoSync) {
-            return;
-        }
-
-        const intervalMs = this.settings.syncInterval * 60 * 1000;
-
-        this.syncTimer = window.setInterval(() => {
-            if (this.isAuthenticated && this.settings.repoOwner && this.settings.repoName) {
-                this.bidirectionalSync();
-            }
-        }, intervalMs);
-    }
-
-    // 更新自动同步设置
-    updateAutoSync() {
-        // 清除现有定时器
-        if (this.syncTimer) {
-            window.clearInterval(this.syncTimer);
-            this.syncTimer = null;
-        }
-
-        // 重新注册
-        if (this.settings.autoSync) {
-            this.registerAutoSync();
-        }
-    }
-
     async syncNow() {
         console.log('Sync now triggered');
         await this.bidirectionalSync();
@@ -680,21 +640,6 @@ class GitSyncSettingTab extends PluginSettingTab {
                 .onChange(async (value) => {
                     this.plugin.settings.autoSync = value;
                     await this.plugin.saveSettings();
-                    this.plugin.updateAutoSync();
-                }));
-
-        new Setting(containerEl)
-            .setName(t('syncInterval'))
-            .setDesc(t('syncIntervalDesc'))
-            .addText(text => text
-                .setValue(String(this.plugin.settings.syncInterval))
-                .onChange(async (value) => {
-                    const num = parseInt(value);
-                    if (!isNaN(num) && num >= 1) {
-                        this.plugin.settings.syncInterval = num;
-                        await this.plugin.saveSettings();
-                        this.plugin.updateAutoSync();
-                    }
                 }));
 
         new Setting(containerEl)

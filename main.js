@@ -4135,9 +4135,7 @@ var translations = {
     // 同步设置
     syncSettings: "\u540C\u6B65\u8BBE\u7F6E",
     autoSync: "\u81EA\u52A8\u540C\u6B65",
-    autoSyncDesc: "\u81EA\u52A8\u540C\u6B65\u53D8\u66F4",
-    syncInterval: "\u540C\u6B65\u95F4\u9694",
-    syncIntervalDesc: "\u81EA\u52A8\u540C\u6B65\u95F4\u9694\uFF08\u5206\u949F\uFF09",
+    autoSyncDesc: "\u6587\u4EF6\u53D8\u66F4\u65F6\u81EA\u52A8\u540C\u6B65",
     fileSizeLimit: "\u6587\u4EF6\u5927\u5C0F\u9650\u5236",
     fileSizeLimitDesc: "\u6700\u5927\u6587\u4EF6\u5927\u5C0F\uFF08MB\uFF09\uFF0CGitHub \u9650\u5236\uFF1A100MB",
     syncOnStartup: "\u542F\u52A8\u65F6\u540C\u6B65",
@@ -4228,9 +4226,7 @@ var translations = {
     // Sync Settings
     syncSettings: "Sync Settings",
     autoSync: "Auto Sync",
-    autoSyncDesc: "Automatically sync changes",
-    syncInterval: "Sync Interval",
-    syncIntervalDesc: "Minutes between auto syncs",
+    autoSyncDesc: "Automatically sync on file changes",
     fileSizeLimit: "File Size Limit",
     fileSizeLimitDesc: "Maximum file size in MB (GitHub limit: 100MB)",
     syncOnStartup: "Sync on Startup",
@@ -5327,7 +5323,6 @@ var DEFAULT_SETTINGS = {
   repoOwner: "",
   repoName: "",
   autoSync: true,
-  syncInterval: 10,
   fileSizeLimit: 100,
   // MB
   syncOnStartup: true,
@@ -5343,8 +5338,6 @@ var _GitSyncPlugin = class _GitSyncPlugin extends import_obsidian4.Plugin {
   constructor() {
     super(...arguments);
     this.isAuthenticated = false;
-    // 自动同步定时器
-    this.syncTimer = null;
     // 文件变更 debounce 定时器
     this.fileChangeTimer = null;
   }
@@ -5395,7 +5388,6 @@ var _GitSyncPlugin = class _GitSyncPlugin extends import_obsidian4.Plugin {
       this.statusBar.setStatus("offline");
     }
     this.registerFileWatcher();
-    this.registerAutoSync();
     if (this.settings.syncOnStartup && this.isAuthenticated && this.settings.repoOwner && this.settings.repoName) {
       setTimeout(() => {
         this.bidirectionalSync();
@@ -5404,10 +5396,6 @@ var _GitSyncPlugin = class _GitSyncPlugin extends import_obsidian4.Plugin {
     console.log("Git Sync plugin loaded");
   }
   onunload() {
-    if (this.syncTimer) {
-      window.clearInterval(this.syncTimer);
-      this.syncTimer = null;
-    }
     if (this.fileChangeTimer) {
       window.clearTimeout(this.fileChangeTimer);
       this.fileChangeTimer = null;
@@ -5581,28 +5569,6 @@ var _GitSyncPlugin = class _GitSyncPlugin extends import_obsidian4.Plugin {
     }
     const pendingCount = this.stateManager.getPendingFiles().length;
     this.statusBar.setPendingCount(pendingCount);
-  }
-  // 注册自动同步定时器
-  registerAutoSync() {
-    if (!this.settings.autoSync) {
-      return;
-    }
-    const intervalMs = this.settings.syncInterval * 60 * 1e3;
-    this.syncTimer = window.setInterval(() => {
-      if (this.isAuthenticated && this.settings.repoOwner && this.settings.repoName) {
-        this.bidirectionalSync();
-      }
-    }, intervalMs);
-  }
-  // 更新自动同步设置
-  updateAutoSync() {
-    if (this.syncTimer) {
-      window.clearInterval(this.syncTimer);
-      this.syncTimer = null;
-    }
-    if (this.settings.autoSync) {
-      this.registerAutoSync();
-    }
   }
   async syncNow() {
     console.log("Sync now triggered");
@@ -5779,15 +5745,6 @@ var GitSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
     new import_obsidian4.Setting(containerEl).setName(t("autoSync")).setDesc(t("autoSyncDesc")).addToggle((toggle) => toggle.setValue(this.plugin.settings.autoSync).onChange(async (value) => {
       this.plugin.settings.autoSync = value;
       await this.plugin.saveSettings();
-      this.plugin.updateAutoSync();
-    }));
-    new import_obsidian4.Setting(containerEl).setName(t("syncInterval")).setDesc(t("syncIntervalDesc")).addText((text) => text.setValue(String(this.plugin.settings.syncInterval)).onChange(async (value) => {
-      const num = parseInt(value);
-      if (!isNaN(num) && num >= 1) {
-        this.plugin.settings.syncInterval = num;
-        await this.plugin.saveSettings();
-        this.plugin.updateAutoSync();
-      }
     }));
     new import_obsidian4.Setting(containerEl).setName(t("fileSizeLimit")).setDesc(t("fileSizeLimitDesc")).addText((text) => text.setValue(String(this.plugin.settings.fileSizeLimit)).onChange(async (value) => {
       const num = parseInt(value);

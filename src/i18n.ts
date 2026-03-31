@@ -38,9 +38,7 @@ const translations = {
         // 同步设置
         syncSettings: '同步设置',
         autoSync: '自动同步',
-        autoSyncDesc: '自动同步变更',
-        syncInterval: '同步间隔',
-        syncIntervalDesc: '自动同步间隔（分钟）',
+        autoSyncDesc: '文件变更时自动同步',
         fileSizeLimit: '文件大小限制',
         fileSizeLimitDesc: '最大文件大小（MB），GitHub 限制：100MB',
         syncOnStartup: '启动时同步',
@@ -143,9 +141,7 @@ const translations = {
         // Sync Settings
         syncSettings: 'Sync Settings',
         autoSync: 'Auto Sync',
-        autoSyncDesc: 'Automatically sync changes',
-        syncInterval: 'Sync Interval',
-        syncIntervalDesc: 'Minutes between auto syncs',
+        autoSyncDesc: 'Automatically sync on file changes',
         fileSizeLimit: 'File Size Limit',
         fileSizeLimitDesc: 'Maximum file size in MB (GitHub limit: 100MB)',
         syncOnStartup: 'Sync on Startup',
