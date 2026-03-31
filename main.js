@@ -735,8 +735,8 @@ function isPlainObject2(value) {
 var noop = () => "";
 async function fetchWrapper(requestOptions) {
   var _a, _b, _c, _d, _e;
-  const fetch = ((_a = requestOptions.request) == null ? void 0 : _a.fetch) || globalThis.fetch;
-  if (!fetch) {
+  const fetch2 = ((_a = requestOptions.request) == null ? void 0 : _a.fetch) || globalThis.fetch;
+  if (!fetch2) {
     throw new Error(
       "fetch is not set. Please pass a fetch implementation as new Octokit({ request: { fetch }}). Learn more at https://github.com/octokit/octokit.js/#fetch-missing"
     );
@@ -752,7 +752,7 @@ async function fetchWrapper(requestOptions) {
   );
   let fetchResponse;
   try {
-    fetchResponse = await fetch(requestOptions.url, {
+    fetchResponse = await fetch2(requestOptions.url, {
       method: requestOptions.method,
       body,
       redirect: (_d = requestOptions.request) == null ? void 0 : _d.redirect,
@@ -3781,6 +3781,16 @@ var GitHubClient = class {
     this.octokit = null;
     this.token = null;
   }
+  // 对路径中的每个组件进行编码，但保留 /
+  // 例如: "sadais/pr/file.md" -> "sadais/pr/file.md"
+  // 例如: "sadais/pr/file with space.md" -> "sadais/pr/file%20with%20space.md"
+  encodePath(path) {
+    return path.split("/").map(encodeURIComponent).join("/");
+  }
+  // 构建 Contents API URL
+  buildContentsUrl(owner, repo, path) {
+    return `https://api.github.com/repos/${owner}/${repo}/contents/${this.encodePath(path)}`;
+  }
   // 初始化客户端
   async initialize(token) {
     this.token = token;
@@ -3879,143 +3889,144 @@ var GitHubClient = class {
       return false;
     }
   }
-  // 获取文件内容
-  // blobSha: 文件的 git blob SHA，用于大文件（>1MB）回退到 Git Blob API
+  // 获取文件内容（优先使用 Git Blob API，避免 Contents API 的 URL 编码问题）
+  // blobSha: 文件的 git blob SHA（可选，如果不提供会自动通过 Tree API 获取）
   async getFile(options, blobSha) {
     if (!this.octokit) return null;
-    try {
-      const { data } = await this.octokit.repos.getContent({
-        owner: options.owner,
-        repo: options.repo,
-        path: options.path,
-        ref: options.ref
-      });
-      if (Array.isArray(data)) {
-        return null;
-      }
-      return {
-        name: data.name,
-        path: data.path,
-        sha: data.sha,
-        size: data.size,
-        url: data.url,
-        html_url: data.html_url,
-        git_url: data.git_url,
-        download_url: data.download_url,
-        type: data.type,
-        content: data.content,
-        encoding: data.encoding
-      };
-    } catch (error) {
-      if (error.status === 403 && blobSha) {
-        try {
-          const { data } = await this.octokit.git.getBlob({
-            owner: options.owner,
-            repo: options.repo,
-            file_sha: blobSha
-          });
-          return {
-            name: options.path.split("/").pop() || "",
-            path: options.path,
-            sha: data.sha,
-            size: data.size,
-            url: "",
-            html_url: "",
-            git_url: "",
-            download_url: "",
-            type: "file",
-            content: data.content,
-            encoding: data.encoding
-          };
-        } catch (blobError) {
-          console.error("Failed to get file blob:", blobError);
-          return null;
-        }
-      }
-      if (error.status !== 404) {
-        console.error("Failed to get file:", error);
-      }
-      return null;
+    let sha = blobSha;
+    if (!sha) {
+      sha = await this.getFileSha(options.owner, options.repo, options.path);
     }
-  }
-  // 获取目录内容
-  async getDirectory(options) {
-    if (!this.octokit) return [];
-    try {
-      const { data } = await this.octokit.repos.getContent({
-        owner: options.owner,
-        repo: options.repo,
-        path: options.path,
-        ref: options.ref
-      });
-      if (!Array.isArray(data)) {
-        return [];
-      }
-      return data.map((item) => ({
-        name: item.name,
-        path: item.path,
-        sha: item.sha,
-        size: item.size,
-        url: item.url,
-        html_url: item.html_url,
-        git_url: item.git_url,
-        download_url: item.download_url,
-        type: item.type
-      }));
-    } catch (error) {
-      console.error("Failed to get directory:", error);
-      return [];
-    }
-  }
-  // 上传/更新文件（带重试机制处理 409 冲突）
-  async uploadFile(options, retryCount = 0) {
-    if (!this.octokit) return null;
-    const maxRetries = 2;
-    try {
-      const params = {
-        owner: options.owner,
-        repo: options.repo,
-        path: options.path,
-        message: options.message,
-        content: options.content,
-        branch: options.branch || "main"
-      };
-      if (options.sha) {
-        params.sha = options.sha;
-      }
-      const { data } = await this.octokit.repos.createOrUpdateFileContents(params);
-      return {
-        sha: data.content.sha,
-        path: data.content.path
-      };
-    } catch (error) {
-      if (error.status === 409 && retryCount < maxRetries) {
-        console.log(`SHA conflict for ${options.path}, retrying (${retryCount + 1}/${maxRetries})...`);
-        const existingFile = await this.getFile({
+    if (sha) {
+      try {
+        const { data } = await this.octokit.git.getBlob({
           owner: options.owner,
           repo: options.repo,
-          path: options.path
+          file_sha: sha
         });
-        const newOptions = { ...options, sha: existingFile == null ? void 0 : existingFile.sha };
+        return {
+          name: options.path.split("/").pop() || "",
+          path: options.path,
+          sha: data.sha,
+          size: data.size,
+          url: "",
+          html_url: "",
+          git_url: "",
+          download_url: "",
+          type: "file",
+          content: data.content,
+          encoding: data.encoding
+        };
+      } catch (error) {
+        if (error.status !== 404) {
+          console.error("[Git Sync] Failed to get file blob:", options.path, error);
+        }
+        return null;
+      }
+    }
+    return null;
+  }
+  // 上传/更新文件（使用原生 fetch 绕过 Octokit 的 URL 编码问题）
+  async uploadFile(options, retryCount = 0) {
+    if (!this.octokit || !this.token) return null;
+    const maxRetries = 3;
+    try {
+      const branch = options.branch || "main";
+      const url = this.buildContentsUrl(options.owner, options.repo, options.path);
+      const body = {
+        message: options.message,
+        content: options.content,
+        branch
+      };
+      if (options.sha) {
+        body.sha = options.sha;
+      }
+      const response = await fetch(url, {
+        method: "PUT",
+        headers: {
+          "Authorization": `Bearer ${this.token}`,
+          "Accept": "application/vnd.github+json",
+          "Content-Type": "application/json",
+          "X-GitHub-Api-Version": "2022-11-28"
+        },
+        body: JSON.stringify(body)
+      });
+      if (response.ok) {
+        const data = await response.json();
+        return {
+          sha: data.content.sha,
+          path: data.content.path
+        };
+      }
+      if (response.status === 409 && retryCount < maxRetries) {
+        console.log(`SHA conflict for ${options.path}, retrying (${retryCount + 1}/${maxRetries})...`);
+        const newSha = await this.getFileSha(options.owner, options.repo, options.path);
+        const newOptions = { ...options, sha: newSha || void 0 };
         return this.uploadFile(newOptions, retryCount + 1);
       }
+      if (response.status === 403 && retryCount < maxRetries) {
+        console.log(`GitHub rule check timeout for ${options.path}, retrying (${retryCount + 1}/${maxRetries})...`);
+        await new Promise((resolve) => setTimeout(resolve, 1e3 * (retryCount + 1)));
+        return this.uploadFile(options, retryCount + 1);
+      }
+      if (response.status === 422 && retryCount < maxRetries) {
+        console.log(`SHA missing for ${options.path}, retrying (${retryCount + 1}/${maxRetries})...`);
+        await new Promise((resolve) => setTimeout(resolve, 2e3));
+        const newSha = await this.getFileSha(options.owner, options.repo, options.path);
+        if (newSha) {
+          const newOptions = { ...options, sha: newSha };
+          return this.uploadFile(newOptions, retryCount + 1);
+        }
+        console.warn(`[Git Sync] Cannot get SHA for ${options.path}, skipping upload. File may need manual sync.`);
+        return null;
+      }
+      const errorText = await response.text();
+      console.error("Failed to upload file:", response.status, errorText);
+      return null;
+    } catch (error) {
       console.error("Failed to upload file:", error);
       return null;
     }
   }
-  // 删除文件
-  async deleteFile(options) {
-    if (!this.octokit) return false;
+  // 删除文件（使用原生 fetch 绕过 Octokit 的 URL 编码问题）
+  async deleteFile(options, retryCount = 0) {
+    if (!this.octokit || !this.token) return false;
+    const maxRetries = 2;
     try {
-      await this.octokit.repos.deleteFile({
-        owner: options.owner,
-        repo: options.repo,
-        path: options.path,
-        message: options.message,
-        sha: options.sha,
-        branch: options.branch || "main"
+      const branch = options.branch || "main";
+      const url = this.buildContentsUrl(options.owner, options.repo, options.path);
+      const response = await fetch(url, {
+        method: "DELETE",
+        headers: {
+          "Authorization": `Bearer ${this.token}`,
+          "Accept": "application/vnd.github+json",
+          "Content-Type": "application/json",
+          "X-GitHub-Api-Version": "2022-11-28"
+        },
+        body: JSON.stringify({
+          message: options.message,
+          sha: options.sha,
+          branch
+        })
       });
-      return true;
+      if (response.ok) {
+        return true;
+      }
+      if (response.status === 404) {
+        return true;
+      }
+      if (response.status === 409 && retryCount < maxRetries) {
+        console.log(`SHA conflict when deleting ${options.path}, retrying (${retryCount + 1}/${maxRetries})...`);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        const newSha = await this.getFileSha(options.owner, options.repo, options.path);
+        if (!newSha) {
+          return true;
+        }
+        const newOptions = { ...options, sha: newSha };
+        return this.deleteFile(newOptions, retryCount + 1);
+      }
+      console.error("Failed to delete file:", response.status, await response.text());
+      return false;
     } catch (error) {
       console.error("Failed to delete file:", error);
       return false;
@@ -4037,17 +4048,21 @@ var GitHubClient = class {
     if (!this.octokit) return [];
     try {
       const defaultBranch = await this.getDefaultBranch(owner, repo);
-      const { data: refData } = await this.octokit.git.getRef({
+      console.log("[Git Sync] Default branch:", defaultBranch);
+      console.log("[Git Sync] Getting branch:", defaultBranch);
+      const { data: branchData } = await this.octokit.repos.getBranch({
         owner,
         repo,
-        ref: `heads/${defaultBranch}`
+        branch: defaultBranch
       });
+      console.log("[Git Sync] Branch commit SHA:", branchData.commit.sha);
       const { data: treeData } = await this.octokit.git.getTree({
         owner,
         repo,
-        tree_sha: refData.object.sha,
+        tree_sha: branchData.commit.sha,
         recursive: "true"
       });
+      console.log("[Git Sync] Tree data count:", treeData.tree.length);
       const files = treeData.tree.filter((item) => item.type === "blob").map((item) => {
         var _a;
         return {
@@ -4062,10 +4077,45 @@ var GitHubClient = class {
           type: "file"
         };
       });
+      console.log("[Git Sync] Files count:", files.length);
       return files;
     } catch (error) {
-      console.error("Failed to get all files:", error);
+      console.error("[Git Sync] Failed to get all files:", error.message || error);
+      console.error("[Git Sync] Error status:", error.status);
+      console.error("[Git Sync] Error details:", error);
       return [];
+    }
+  }
+  // 获取单个文件的 SHA（通过 Tree API，避免 Contents API 的 URL 编码问题）
+  async getFileSha(owner, repo, path, retryCount = 0) {
+    if (!this.octokit) return null;
+    const maxRetries = 5;
+    try {
+      const defaultBranch = await this.getDefaultBranch(owner, repo);
+      const { data: branchData } = await this.octokit.repos.getBranch({
+        owner,
+        repo,
+        branch: defaultBranch
+      });
+      const { data: treeData } = await this.octokit.git.getTree({
+        owner,
+        repo,
+        tree_sha: branchData.commit.sha,
+        recursive: "true"
+      });
+      const file = treeData.tree.find((item) => item.path === path && item.type === "blob");
+      const sha = (file == null ? void 0 : file.sha) || null;
+      if (!sha && retryCount < maxRetries) {
+        console.log(`SHA not found for ${path}, retrying (${retryCount + 1}/${maxRetries})...`);
+        await new Promise((resolve) => setTimeout(resolve, 1e3 * (retryCount + 1)));
+        return this.getFileSha(owner, repo, path, retryCount + 1);
+      }
+      return sha;
+    } catch (error) {
+      if (error.status !== 404) {
+        console.error("[Git Sync] Failed to get file SHA:", path, error);
+      }
+      return null;
     }
   }
   // 获取 Token
@@ -4096,6 +4146,7 @@ var AuthManager = class {
     if (success) {
       this.user = await this.client.getCurrentUser();
       if (this.user) {
+        console.log("[Git Sync] Authenticated as:", this.user.login);
         this.notifyAuthChange();
         return true;
       }
@@ -4277,6 +4328,7 @@ var translations = {
     pleaseConfigRepo: "\u8BF7\u5148\u914D\u7F6E\u4ED3\u5E93",
     notAuthenticated: "\u672A\u8BA4\u8BC1",
     repoNotConfigured: "\u4ED3\u5E93\u672A\u914D\u7F6E",
+    downloadFailed: "\u4E0B\u8F7D\u6587\u4EF6\u5931\u8D25\uFF1A{path}",
     // 状态
     statusSynced: "\u5DF2\u540C\u6B65",
     statusSyncing: "\u540C\u6B65\u4E2D",
@@ -4395,6 +4447,7 @@ var translations = {
     pleaseConfigRepo: "Please configure repository first",
     notAuthenticated: "Not authenticated",
     repoNotConfigured: "Repository not configured",
+    downloadFailed: "Failed to download file: {path}",
     // Status
     statusSynced: "Synced",
     statusSyncing: "Syncing",
@@ -4590,6 +4643,11 @@ var TEMP_FILE_NAMES = [
   "New note",
   "\u65B0\u7B14\u8BB0"
 ];
+function isTempFileName(fileName) {
+  return TEMP_FILE_NAMES.some(
+    (tempName) => fileName === tempName || fileName.startsWith(tempName + "-")
+  );
+}
 var SyncEngine = class {
   constructor(plugin) {
     this.client = null;
@@ -4661,9 +4719,7 @@ var SyncEngine = class {
         result.skippedFiles++;
         return false;
       }
-      if (TEMP_FILE_NAMES.some(
-        (tempName) => file.basename === tempName || file.basename.startsWith(tempName + "-")
-      )) {
+      if (isTempFileName(file.basename)) {
         result.skippedFiles++;
         return false;
       }
@@ -4823,6 +4879,10 @@ var SyncEngine = class {
       } else {
         this.isDownloading = true;
         try {
+          const parentPath = path.substring(0, path.lastIndexOf("/"));
+          if (parentPath) {
+            await this.ensureFolderExists(parentPath);
+          }
           await this.vault.createBinary(path, content);
         } finally {
           this.isDownloading = false;
@@ -4836,8 +4896,21 @@ var SyncEngine = class {
       return true;
     } catch (error) {
       console.error("Failed to download file:", path, error);
+      new import_obsidian2.Notice(t("downloadFailed", { path }));
       return false;
     }
+  }
+  // 确保目录存在（递归创建）
+  async ensureFolderExists(folderPath) {
+    const folder = this.vault.getAbstractFileByPath(folderPath);
+    if (folder instanceof import_obsidian2.TFolder) {
+      return;
+    }
+    const parentPath = folderPath.substring(0, folderPath.lastIndexOf("/"));
+    if (parentPath) {
+      await this.ensureFolderExists(parentPath);
+    }
+    await this.vault.createFolder(folderPath);
   }
   // 从远程全量拉取
   async pullFromRemote() {
@@ -4893,7 +4966,7 @@ var SyncEngine = class {
           result.skippedFiles++;
           continue;
         }
-        const success = await this.downloadFile(remoteFile.path, true);
+        const success = await this.downloadFile(remoteFile.path, true, remoteFile.sha);
         if (success) {
           result.uploadedFiles++;
         } else {
@@ -4905,15 +4978,11 @@ var SyncEngine = class {
         }
       }
       const localFiles = this.getAllFiles();
-      const tempFileNames = TEMP_FILE_NAMES;
       for (const localFile of localFiles) {
         if (this.shouldExcludeFile(localFile.path)) {
           continue;
         }
-        const fileName = localFile.basename;
-        if (tempFileNames.some(
-          (tempName) => fileName === tempName || fileName.startsWith(tempName + "-")
-        )) {
+        if (isTempFileName(localFile.basename)) {
           continue;
         }
         if (!remoteFilePaths.has(localFile.path)) {
@@ -4991,7 +5060,6 @@ var SyncEngine = class {
       for (const file of remoteFiles) {
         remoteFileMap.set(file.path, { sha: file.sha, path: file.path });
       }
-      const tempFileNames = TEMP_FILE_NAMES;
       const totalRemoteFiles = remoteFiles.length;
       let processedRemoteFiles = 0;
       for (const remoteFile of remoteFiles) {
@@ -5067,10 +5135,7 @@ var SyncEngine = class {
         if (this.shouldExcludeFile(localFile.path)) {
           continue;
         }
-        const fileName = localFile.basename;
-        if (tempFileNames.some(
-          (tempName) => fileName === tempName || fileName.startsWith(tempName + "-")
-        )) {
+        if (isTempFileName(localFile.basename)) {
           continue;
         }
         if (!this.isFileSizeOk(localFile.stat.size)) {
@@ -5080,7 +5145,7 @@ var SyncEngine = class {
         const fileState = this.plugin.stateManager.getFileState(localFile.path);
         const needsUpload = !remoteInfo || !fileState || new Date(localFile.stat.mtime) > new Date(fileState.localModified);
         if (needsUpload) {
-          const success = await this.uploadSingleFileWithSha(localFile, remoteInfo == null ? void 0 : remoteInfo.sha);
+          const success = await this.uploadSingleFile(localFile, remoteInfo == null ? void 0 : remoteInfo.sha);
           if (success) {
             uploadCount++;
           } else {
@@ -5112,51 +5177,8 @@ var SyncEngine = class {
       };
     }
   }
-  // 上传单个文件（使用已知的 SHA，减少 API 调用）
-  async uploadSingleFileWithSha(file, knownRemoteSha) {
-    if (!this.client) {
-      return false;
-    }
-    const { repoOwner, repoName } = this.plugin.settings;
-    if (!repoOwner || !repoName) {
-      return false;
-    }
-    try {
-      const content = await this.vault.readBinary(file);
-      const base64Content = this.arrayBufferToBase64(content);
-      let sha = knownRemoteSha;
-      if (sha === void 0) {
-        const existingFile = await this.client.getFile({
-          owner: repoOwner,
-          repo: repoName,
-          path: file.path
-        });
-        sha = existingFile == null ? void 0 : existingFile.sha;
-      }
-      const uploadResult = await this.client.uploadFile({
-        owner: repoOwner,
-        repo: repoName,
-        path: file.path,
-        message: sha ? `Update ${file.path}` : `Upload ${file.path}`,
-        content: base64Content,
-        sha
-      });
-      if (uploadResult) {
-        await this.plugin.stateManager.updateFileSynced(
-          file.path,
-          uploadResult.sha,
-          new Date(file.stat.mtime).toISOString()
-        );
-        return true;
-      }
-      return false;
-    } catch (error) {
-      console.error("Failed to upload file:", file.path, error);
-      return false;
-    }
-  }
   // 上传单个文件
-  async uploadSingleFile(file) {
+  async uploadSingleFile(file, knownRemoteSha) {
     if (!this.client) {
       return false;
     }
@@ -5167,9 +5189,7 @@ var SyncEngine = class {
     if (this.shouldExcludeFile(file.path)) {
       return false;
     }
-    if (TEMP_FILE_NAMES.some(
-      (tempName) => file.basename === tempName || file.basename.startsWith(tempName + "-")
-    )) {
+    if (isTempFileName(file.basename)) {
       console.log("Skipping temp file:", file.path);
       return false;
     }
@@ -5180,18 +5200,14 @@ var SyncEngine = class {
     try {
       const content = await this.vault.readBinary(file);
       const base64Content = this.arrayBufferToBase64(content);
-      const existingFile = await this.client.getFile({
-        owner: repoOwner,
-        repo: repoName,
-        path: file.path
-      });
+      const sha = knownRemoteSha != null ? knownRemoteSha : await this.client.getFileSha(repoOwner, repoName, file.path);
       const uploadResult = await this.client.uploadFile({
         owner: repoOwner,
         repo: repoName,
         path: file.path,
-        message: existingFile ? `Update ${file.path}` : `Upload ${file.path}`,
+        message: sha ? `Update ${file.path}` : `Upload ${file.path}`,
         content: base64Content,
-        sha: existingFile == null ? void 0 : existingFile.sha
+        sha
       });
       if (uploadResult) {
         await this.plugin.stateManager.updateFileSynced(
@@ -5217,13 +5233,8 @@ var SyncEngine = class {
       return false;
     }
     try {
-      const remoteFile = await this.client.getFile({
-        owner: repoOwner,
-        repo: repoName,
-        path
-      });
-      if (!remoteFile) {
-        console.log("Remote file not found, skip delete:", path);
+      const remoteSha = await this.client.getFileSha(repoOwner, repoName, path);
+      if (!remoteSha) {
         return true;
       }
       const success = await this.client.deleteFile({
@@ -5231,7 +5242,7 @@ var SyncEngine = class {
         repo: repoName,
         path,
         message: `Delete ${path}`,
-        sha: remoteFile.sha
+        sha: remoteSha
       });
       if (success) {
         console.log("Remote file deleted:", path);
@@ -5304,27 +5315,24 @@ var StateManager = class {
     this.state.lastSyncTime = (/* @__PURE__ */ new Date()).toISOString();
     await this.saveState();
   }
-  // 标记文件待同步
-  async markFilePending(path, localModified) {
+  // 设置文件状态（通用方法）
+  async setFileStatus(path, status, localModified) {
     const existing = this.state.fileStates[path];
     this.state.fileStates[path] = {
       localPath: path,
       remoteSha: (existing == null ? void 0 : existing.remoteSha) || "",
       localModified,
-      status: "pending"
+      status
     };
     await this.saveState();
   }
+  // 标记文件待同步
+  async markFilePending(path, localModified) {
+    await this.setFileStatus(path, "pending", localModified);
+  }
   // 标记文件冲突
   async markFileConflict(path, localModified) {
-    const existing = this.state.fileStates[path];
-    this.state.fileStates[path] = {
-      localPath: path,
-      remoteSha: (existing == null ? void 0 : existing.remoteSha) || "",
-      localModified,
-      status: "conflict"
-    };
-    await this.saveState();
+    await this.setFileStatus(path, "conflict", localModified);
   }
   // 获取所有待同步文件
   getPendingFiles() {
@@ -5919,40 +5927,14 @@ var StatusBarManager = class {
   showMenu(evt) {
     const menu = new import_obsidian5.Menu();
     menu.addItem((item) => {
-      item.setTitle(t("menuSyncNow")).onClick(() => {
-        if (!this.plugin.isAuthenticated) {
-          new import_obsidian5.Notice(t("pleaseLogin"));
-          return;
-        }
-        this.plugin.syncNow();
-      });
+      item.setTitle(t("menuSyncNow")).onClick(() => this.plugin.syncNow());
     });
     menu.addSeparator();
     menu.addItem((item) => {
-      item.setTitle(t("menuPullFromRemote")).onClick(() => {
-        if (!this.plugin.isAuthenticated) {
-          new import_obsidian5.Notice(t("pleaseLogin"));
-          return;
-        }
-        if (!this.plugin.settings.repoOwner || !this.plugin.settings.repoName) {
-          new import_obsidian5.Notice(t("pleaseConfigRepo"));
-          return;
-        }
-        this.plugin.pullFromRemote();
-      });
+      item.setTitle(t("menuPullFromRemote")).onClick(() => this.plugin.pullFromRemote());
     });
     menu.addItem((item) => {
-      item.setTitle(t("menuPushToRemote")).onClick(() => {
-        if (!this.plugin.isAuthenticated) {
-          new import_obsidian5.Notice(t("pleaseLogin"));
-          return;
-        }
-        if (!this.plugin.settings.repoOwner || !this.plugin.settings.repoName) {
-          new import_obsidian5.Notice(t("pleaseConfigRepo"));
-          return;
-        }
-        this.plugin.fullSync();
-      });
+      item.setTitle(t("menuPushToRemote")).onClick(() => this.plugin.fullSync());
     });
     if (this.conflictCount > 0) {
       menu.addSeparator();
@@ -6051,6 +6033,8 @@ var GitSyncPlugin = class extends import_obsidian6.Plugin {
     this.fileChangeTimer = null;
     // 同步锁：防止 bidirectionalSync/fullSync/pullFromRemote 与 syncPendingFiles 并发执行
     this.isSyncing = false;
+    // 延迟操作队列：同步过程中的用户操作存入此队列，同步完成后处理
+    this.deferredOperations = [];
   }
   async onload() {
     await this.loadSettings();
@@ -6167,10 +6151,16 @@ var GitSyncPlugin = class extends import_obsidian6.Plugin {
     if (!this.syncEngine.isFileSizeOk(file.stat.size)) {
       return;
     }
-    const fileName = file.basename;
-    if (TEMP_FILE_NAMES.some(
-      (tempName) => fileName === tempName || fileName.startsWith(tempName + "-")
-    )) {
+    if (isTempFileName(file.basename)) {
+      return;
+    }
+    if (this.isSyncing) {
+      this.addDeferredOperation({
+        type: "modify",
+        path: file.path,
+        file,
+        timestamp: Date.now()
+      });
       return;
     }
     this.addToSyncQueue(file);
@@ -6187,6 +6177,64 @@ var GitSyncPlugin = class extends import_obsidian6.Plugin {
       this.syncPendingFiles();
     }, 300);
   }
+  // 添加延迟操作到队列
+  addDeferredOperation(operation) {
+    const existingIndex = this.deferredOperations.findIndex((op) => op.path === operation.path);
+    if (existingIndex >= 0) {
+      if (operation.type === "delete") {
+        this.deferredOperations[existingIndex] = operation;
+      } else if (operation.type === "modify" && this.deferredOperations[existingIndex].type !== "delete") {
+        this.deferredOperations[existingIndex] = operation;
+      }
+    } else {
+      this.deferredOperations.push(operation);
+    }
+    console.log("[Git Sync] Deferred operation added:", operation.type, operation.path);
+  }
+  // 处理延迟操作队列（同步完成后调用）
+  async processDeferredOperations() {
+    if (this.deferredOperations.length === 0) {
+      return;
+    }
+    console.log("[Git Sync] Processing deferred operations:", this.deferredOperations.length);
+    const operations = [...this.deferredOperations];
+    this.deferredOperations = [];
+    operations.sort((a, b) => a.timestamp - b.timestamp);
+    for (const op of operations) {
+      try {
+        switch (op.type) {
+          case "delete":
+            await this.deleteRemoteFile(op.path);
+            break;
+          case "modify": {
+            const file = this.app.vault.getAbstractFileByPath(op.path);
+            if (!(file instanceof import_obsidian6.TFile)) break;
+            const fileState = this.stateManager.getFileState(op.path);
+            const localModified = new Date(file.stat.mtime);
+            if (fileState && localModified <= new Date(fileState.localModified)) {
+              console.log("[Git Sync] Skipping deferred modify, already synced:", op.path);
+              break;
+            }
+            await this.syncEngine.uploadSingleFile(file);
+            break;
+          }
+          case "rename": {
+            if (op.oldPath) {
+              await this.deleteRemoteFile(op.oldPath);
+            }
+            const file = this.app.vault.getAbstractFileByPath(op.path);
+            if (file instanceof import_obsidian6.TFile) {
+              await this.syncEngine.uploadSingleFile(file);
+            }
+            break;
+          }
+        }
+      } catch (error) {
+        console.error("[Git Sync] Failed to process deferred operation:", op, error);
+      }
+    }
+    console.log("[Git Sync] Deferred operations processed");
+  }
   // 处理文件删除
   handleFileDelete(file) {
     if (this.syncEngine.isDeletingLocalFiles) {
@@ -6195,12 +6243,21 @@ var GitSyncPlugin = class extends import_obsidian6.Plugin {
     if (!this.settings.autoSync || !this.isAuthenticated) {
       return;
     }
+    const isTempFile = isTempFileName(file.basename);
+    const isExcluded = this.syncEngine.shouldExcludeFile(file.path);
+    if (this.isSyncing) {
+      if (!isTempFile && !isExcluded) {
+        this.addDeferredOperation({
+          type: "delete",
+          path: file.path,
+          timestamp: Date.now()
+        });
+      }
+      this.stateManager.clearFileState(file.path);
+      return;
+    }
     this.stateManager.clearFileState(file.path);
-    const fileName = file.basename;
-    const wasTempFile = TEMP_FILE_NAMES.some(
-      (tempName) => fileName === tempName || fileName.startsWith(tempName + "-")
-    );
-    if (!wasTempFile && !this.syncEngine.shouldExcludeFile(file.path)) {
+    if (!isTempFile && !isExcluded) {
       this.deleteRemoteFile(file.path);
     }
     const pendingCount = this.stateManager.getPendingFiles().length;
@@ -6227,20 +6284,29 @@ var GitSyncPlugin = class extends import_obsidian6.Plugin {
       return;
     }
     this.stateManager.clearFileState(oldPath);
-    const oldFileName = this.getFileNameFromPath(oldPath);
-    const wasTempFile = TEMP_FILE_NAMES.some(
-      (tempName) => oldFileName === tempName || oldFileName.startsWith(tempName + "-")
-    );
-    if (!wasTempFile && !this.syncEngine.shouldExcludeFile(oldPath)) {
-      this.deleteRemoteFile(oldPath);
-    }
-    const fileName = file.basename;
-    if (TEMP_FILE_NAMES.some(
-      (tempName) => fileName === tempName || fileName.startsWith(tempName + "-")
-    )) {
+    const wasTempFile = isTempFileName(this.getFileNameFromPath(oldPath));
+    const isTempFile = isTempFileName(file.basename);
+    const isOldExcluded = this.syncEngine.shouldExcludeFile(oldPath);
+    const isNewExcluded = this.syncEngine.shouldExcludeFile(file.path);
+    if (this.isSyncing) {
+      if (!wasTempFile && !isOldExcluded) {
+        this.addDeferredOperation({
+          type: "rename",
+          path: file.path,
+          oldPath,
+          file,
+          timestamp: Date.now()
+        });
+      }
       return;
     }
-    if (!this.syncEngine.shouldExcludeFile(file.path)) {
+    if (!wasTempFile && !isOldExcluded) {
+      this.deleteRemoteFile(oldPath);
+    }
+    if (isTempFile) {
+      return;
+    }
+    if (!isNewExcluded) {
       this.addToSyncQueue(file);
     }
   }
@@ -6294,6 +6360,24 @@ var GitSyncPlugin = class extends import_obsidian6.Plugin {
     }
     const pendingCount = this.stateManager.getPendingFiles().length;
     this.statusBar.setPendingCount(pendingCount);
+    await this.processDeferredOperations();
+  }
+  // 检查同步前置条件，返回客户端（如果准备就绪）
+  ensureSyncReady() {
+    if (!this.isAuthenticated) {
+      new import_obsidian6.Notice(t("pleaseLogin"));
+      return null;
+    }
+    if (!this.settings.repoOwner || !this.settings.repoName) {
+      new import_obsidian6.Notice(t("pleaseConfigRepo"));
+      return null;
+    }
+    const client = this.authManager.getClient();
+    if (!client) {
+      new import_obsidian6.Notice(t("notAuthenticated"));
+      return null;
+    }
+    return client;
   }
   async syncNow() {
     console.log("Sync now triggered");
@@ -6301,71 +6385,41 @@ var GitSyncPlugin = class extends import_obsidian6.Plugin {
   }
   async fullSync() {
     console.log("Full sync triggered");
-    if (!this.isAuthenticated) {
-      new import_obsidian6.Notice(t("pleaseLogin"));
-      return;
-    }
-    if (!this.settings.repoOwner || !this.settings.repoName) {
-      new import_obsidian6.Notice(t("pleaseConfigRepo"));
-      return;
-    }
-    const client = this.authManager.getClient();
-    if (!client) {
-      new import_obsidian6.Notice(t("notAuthenticated"));
-      return;
-    }
+    const client = this.ensureSyncReady();
+    if (!client) return;
     this.syncEngine.setClient(client);
     this.isSyncing = true;
     try {
       await this.syncEngine.fullSync();
     } finally {
       this.isSyncing = false;
+      await this.processDeferredOperations();
     }
   }
   async pullFromRemote() {
     console.log("Pull from remote triggered");
-    if (!this.isAuthenticated) {
-      new import_obsidian6.Notice(t("pleaseLogin"));
-      return;
-    }
-    if (!this.settings.repoOwner || !this.settings.repoName) {
-      new import_obsidian6.Notice(t("pleaseConfigRepo"));
-      return;
-    }
-    const client = this.authManager.getClient();
-    if (!client) {
-      new import_obsidian6.Notice(t("notAuthenticated"));
-      return;
-    }
+    const client = this.ensureSyncReady();
+    if (!client) return;
     this.syncEngine.setClient(client);
     this.isSyncing = true;
     try {
       await this.syncEngine.pullFromRemote();
     } finally {
       this.isSyncing = false;
+      await this.processDeferredOperations();
     }
   }
   async bidirectionalSync() {
     console.log("Bidirectional sync triggered");
-    if (!this.isAuthenticated) {
-      new import_obsidian6.Notice(t("pleaseLogin"));
-      return;
-    }
-    if (!this.settings.repoOwner || !this.settings.repoName) {
-      new import_obsidian6.Notice(t("pleaseConfigRepo"));
-      return;
-    }
-    const client = this.authManager.getClient();
-    if (!client) {
-      new import_obsidian6.Notice(t("notAuthenticated"));
-      return;
-    }
+    const client = this.ensureSyncReady();
+    if (!client) return;
     this.syncEngine.setClient(client);
     this.isSyncing = true;
     try {
       await this.syncEngine.bidirectionalSync();
     } finally {
       this.isSyncing = false;
+      await this.processDeferredOperations();
     }
   }
 };

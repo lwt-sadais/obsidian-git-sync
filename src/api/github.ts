@@ -13,6 +13,18 @@ export class GitHubClient {
     private octokit: Octokit | null = null;
     private token: string | null = null;
 
+    // 对路径中的每个组件进行编码，但保留 /
+    // 例如: "sadais/pr/file.md" -> "sadais/pr/file.md"
+    // 例如: "sadais/pr/file with space.md" -> "sadais/pr/file%20with%20space.md"
+    private encodePath(path: string): string {
+        return path.split('/').map(encodeURIComponent).join('/');
+    }
+
+    // 构建 Contents API URL
+    private buildContentsUrl(owner: string, repo: string, path: string): string {
+        return `https://api.github.com/repos/${owner}/${repo}/contents/${this.encodePath(path)}`;
+    }
+
     // 初始化客户端
     async initialize(token: string): Promise<boolean> {
         this.token = token;
@@ -123,168 +135,198 @@ export class GitHubClient {
         }
     }
 
-    // 获取文件内容
-    // blobSha: 文件的 git blob SHA，用于大文件（>1MB）回退到 Git Blob API
+    // 获取文件内容（优先使用 Git Blob API，避免 Contents API 的 URL 编码问题）
+    // blobSha: 文件的 git blob SHA（可选，如果不提供会自动通过 Tree API 获取）
     async getFile(options: GetFileOptions, blobSha?: string): Promise<GitHubFile | null> {
         if (!this.octokit) return null;
 
-        try {
-            const { data } = await this.octokit.repos.getContent({
-                owner: options.owner,
-                repo: options.repo,
-                path: options.path,
-                ref: options.ref
-            });
+        // 获取 blobSha（如果没有提供）
+        let sha = blobSha;
+        if (!sha) {
+            sha = await this.getFileSha(options.owner, options.repo, options.path);
+        }
 
-            if (Array.isArray(data)) {
-                // 这是一个目录
+        // 使用 Git Blob API（更可靠，避免 URL 编码问题）
+        if (sha) {
+            try {
+                const { data } = await this.octokit.git.getBlob({
+                    owner: options.owner,
+                    repo: options.repo,
+                    file_sha: sha
+                });
+                return {
+                    name: options.path.split('/').pop() || '',
+                    path: options.path,
+                    sha: data.sha,
+                    size: data.size,
+                    url: '',
+                    html_url: '',
+                    git_url: '',
+                    download_url: '',
+                    type: 'file',
+                    content: data.content,
+                    encoding: data.encoding
+                };
+            } catch (error: any) {
+                // 404 表示文件不存在，是预期行为，不打印错误
+                if (error.status !== 404) {
+                    console.error('[Git Sync] Failed to get file blob:', options.path, error);
+                }
                 return null;
             }
-
-            return {
-                name: data.name,
-                path: data.path,
-                sha: data.sha,
-                size: data.size,
-                url: data.url,
-                html_url: data.html_url,
-                git_url: data.git_url,
-                download_url: data.download_url,
-                type: data.type as 'file' | 'dir' | 'symlink' | 'submodule',
-                content: data.content,
-                encoding: data.encoding
-            };
-        } catch (error: any) {
-            // 文件超过 1MB，Content API 返回 403，改用 Git Blob API
-            if (error.status === 403 && blobSha) {
-                try {
-                    const { data } = await this.octokit.git.getBlob({
-                        owner: options.owner,
-                        repo: options.repo,
-                        file_sha: blobSha
-                    });
-                    return {
-                        name: options.path.split('/').pop() || '',
-                        path: options.path,
-                        sha: data.sha,
-                        size: data.size,
-                        url: '',
-                        html_url: '',
-                        git_url: '',
-                        download_url: '',
-                        type: 'file',
-                        content: data.content,
-                        encoding: data.encoding
-                    };
-                } catch (blobError) {
-                    console.error('Failed to get file blob:', blobError);
-                    return null;
-                }
-            }
-            // 404 表示文件不存在，是预期行为，不打印错误
-            if (error.status !== 404) {
-                console.error('Failed to get file:', error);
-            }
-            return null;
         }
+
+        // 没有 blobSha 且无法获取（文件可能不存在）
+        return null;
     }
 
-    // 获取目录内容
-    async getDirectory(options: GetFileOptions): Promise<GitHubFile[]> {
-        if (!this.octokit) return [];
-
-        try {
-            const { data } = await this.octokit.repos.getContent({
-                owner: options.owner,
-                repo: options.repo,
-                path: options.path,
-                ref: options.ref
-            });
-
-            if (!Array.isArray(data)) {
-                return [];
-            }
-
-            return data.map(item => ({
-                name: item.name,
-                path: item.path,
-                sha: item.sha,
-                size: item.size,
-                url: item.url,
-                html_url: item.html_url,
-                git_url: item.git_url,
-                download_url: item.download_url,
-                type: item.type as 'file' | 'dir' | 'symlink' | 'submodule'
-            }));
-        } catch (error) {
-            console.error('Failed to get directory:', error);
-            return [];
-        }
-    }
-
-    // 上传/更新文件（带重试机制处理 409 冲突）
+    
+    // 上传/更新文件（使用原生 fetch 绕过 Octokit 的 URL 编码问题）
     async uploadFile(options: UploadFileOptions, retryCount = 0): Promise<{ sha: string; path: string } | null> {
-        if (!this.octokit) return null;
+        if (!this.octokit || !this.token) return null;
 
-        const maxRetries = 2;
+        const maxRetries = 3;
 
         try {
-            const params: any = {
-                owner: options.owner,
-                repo: options.repo,
-                path: options.path,
+            const branch = options.branch || 'main';
+            const url = this.buildContentsUrl(options.owner, options.repo, options.path);
+
+            const body: any = {
                 message: options.message,
                 content: options.content,
-                branch: options.branch || 'main'
+                branch: branch
             };
 
             if (options.sha) {
-                params.sha = options.sha;
+                body.sha = options.sha;
             }
 
-            const { data } = await this.octokit.repos.createOrUpdateFileContents(params);
+            const response = await fetch(url, {
+                method: 'PUT',
+                headers: {
+                    'Authorization': `Bearer ${this.token}`,
+                    'Accept': 'application/vnd.github+json',
+                    'Content-Type': 'application/json',
+                    'X-GitHub-Api-Version': '2022-11-28'
+                },
+                body: JSON.stringify(body)
+            });
 
-            return {
-                sha: data.content.sha,
-                path: data.content.path
-            };
-        } catch (error: any) {
+            if (response.ok) {
+                const data = await response.json();
+                return {
+                    sha: data.content.sha,
+                    path: data.content.path
+                };
+            }
+
             // 409 Conflict: SHA 不匹配，重新获取 SHA 并重试
-            if (error.status === 409 && retryCount < maxRetries) {
+            if (response.status === 409 && retryCount < maxRetries) {
                 console.log(`SHA conflict for ${options.path}, retrying (${retryCount + 1}/${maxRetries})...`);
 
-                // 重新获取远程文件 SHA
-                const existingFile = await this.getFile({
-                    owner: options.owner,
-                    repo: options.repo,
-                    path: options.path
-                });
+                // 使用 getFileSha（通过 Tree API）获取远程文件 SHA
+                const newSha = await this.getFileSha(options.owner, options.repo, options.path);
 
                 // 使用新的 SHA 重试
-                const newOptions = { ...options, sha: existingFile?.sha };
+                const newOptions = { ...options, sha: newSha || undefined };
                 return this.uploadFile(newOptions, retryCount + 1);
             }
 
+            // 403 Forbidden: GitHub 规则检查超时，等待后重试
+            if (response.status === 403 && retryCount < maxRetries) {
+                console.log(`GitHub rule check timeout for ${options.path}, retrying (${retryCount + 1}/${maxRetries})...`);
+
+                // 等待 GitHub 完成检查
+                await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
+
+                return this.uploadFile(options, retryCount + 1);
+            }
+
+            // 422 Unprocessable Content: 文件已存在但未提供 SHA，等待后获取 SHA 重试
+            if (response.status === 422 && retryCount < maxRetries) {
+                console.log(`SHA missing for ${options.path}, retrying (${retryCount + 1}/${maxRetries})...`);
+
+                // 等待 Tree 更新（使用较长等待时间）
+                await new Promise(resolve => setTimeout(resolve, 2000));
+
+                // 重新获取远程文件 SHA
+                const newSha = await this.getFileSha(options.owner, options.repo, options.path);
+
+                if (newSha) {
+                    const newOptions = { ...options, sha: newSha };
+                    return this.uploadFile(newOptions, retryCount + 1);
+                }
+
+                // 如果仍然获取不到 SHA，可能是 Tree 更新延迟，跳过此次上传
+                console.warn(`[Git Sync] Cannot get SHA for ${options.path}, skipping upload. File may need manual sync.`);
+                return null;
+            }
+
+            const errorText = await response.text();
+            console.error('Failed to upload file:', response.status, errorText);
+            return null;
+        } catch (error) {
             console.error('Failed to upload file:', error);
             return null;
         }
     }
 
-    // 删除文件
-    async deleteFile(options: DeleteFileOptions): Promise<boolean> {
-        if (!this.octokit) return false;
+    // 删除文件（使用原生 fetch 绕过 Octokit 的 URL 编码问题）
+    async deleteFile(options: DeleteFileOptions, retryCount = 0): Promise<boolean> {
+        if (!this.octokit || !this.token) return false;
+
+        const maxRetries = 2;
 
         try {
-            await this.octokit.repos.deleteFile({
-                owner: options.owner,
-                repo: options.repo,
-                path: options.path,
-                message: options.message,
-                sha: options.sha,
-                branch: options.branch || 'main'
+            const branch = options.branch || 'main';
+            const url = this.buildContentsUrl(options.owner, options.repo, options.path);
+
+            const response = await fetch(url, {
+                method: 'DELETE',
+                headers: {
+                    'Authorization': `Bearer ${this.token}`,
+                    'Accept': 'application/vnd.github+json',
+                    'Content-Type': 'application/json',
+                    'X-GitHub-Api-Version': '2022-11-28'
+                },
+                body: JSON.stringify({
+                    message: options.message,
+                    sha: options.sha,
+                    branch: branch
+                })
             });
 
-            return true;
+            if (response.ok) {
+                return true;
+            }
+
+            // 404 表示文件不存在，视为成功
+            if (response.status === 404) {
+                return true;
+            }
+
+            // 409 Conflict: SHA 不匹配，重新获取 SHA 并重试
+            if (response.status === 409 && retryCount < maxRetries) {
+                console.log(`SHA conflict when deleting ${options.path}, retrying (${retryCount + 1}/${maxRetries})...`);
+
+                // 等待一小段时间让 GitHub 完成之前的操作
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                // 重新获取远程文件 SHA
+                const newSha = await this.getFileSha(options.owner, options.repo, options.path);
+
+                if (!newSha) {
+                    // 文件已不存在，视为成功
+                    return true;
+                }
+
+                // 使用新的 SHA 重试
+                const newOptions = { ...options, sha: newSha };
+                return this.deleteFile(newOptions, retryCount + 1);
+            }
+
+            console.error('Failed to delete file:', response.status, await response.text());
+            return false;
         } catch (error) {
             console.error('Failed to delete file:', error);
             return false;
@@ -311,21 +353,25 @@ export class GitHubClient {
         try {
             // 获取默认分支
             const defaultBranch = await this.getDefaultBranch(owner, repo);
+            console.log('[Git Sync] Default branch:', defaultBranch);
 
-            // 获取默认分支的最新 commit
-            const { data: refData } = await this.octokit.git.getRef({
+            // 使用 repos.getBranch 获取分支信息（比 git.getRef 更可靠）
+            console.log('[Git Sync] Getting branch:', defaultBranch);
+            const { data: branchData } = await this.octokit.repos.getBranch({
                 owner,
                 repo,
-                ref: `heads/${defaultBranch}`
+                branch: defaultBranch
             });
+            console.log('[Git Sync] Branch commit SHA:', branchData.commit.sha);
 
             // 获取递归文件树
             const { data: treeData } = await this.octokit.git.getTree({
                 owner,
                 repo,
-                tree_sha: refData.object.sha,
+                tree_sha: branchData.commit.sha,
                 recursive: 'true'
             });
+            console.log('[Git Sync] Tree data count:', treeData.tree.length);
 
             // 过滤出文件（排除目录）
             const files: GitHubFile[] = treeData.tree
@@ -342,10 +388,54 @@ export class GitHubClient {
                     type: 'file' as const
                 }));
 
+            console.log('[Git Sync] Files count:', files.length);
             return files;
-        } catch (error) {
-            console.error('Failed to get all files:', error);
+        } catch (error: any) {
+            console.error('[Git Sync] Failed to get all files:', error.message || error);
+            console.error('[Git Sync] Error status:', error.status);
+            console.error('[Git Sync] Error details:', error);
             return [];
+        }
+    }
+
+    // 获取单个文件的 SHA（通过 Tree API，避免 Contents API 的 URL 编码问题）
+    async getFileSha(owner: string, repo: string, path: string, retryCount = 0): Promise<string | null> {
+        if (!this.octokit) return null;
+
+        const maxRetries = 5;
+
+        try {
+            const defaultBranch = await this.getDefaultBranch(owner, repo);
+            const { data: branchData } = await this.octokit.repos.getBranch({
+                owner,
+                repo,
+                branch: defaultBranch
+            });
+
+            const { data: treeData } = await this.octokit.git.getTree({
+                owner,
+                repo,
+                tree_sha: branchData.commit.sha,
+                recursive: 'true'
+            });
+
+            const file = treeData.tree.find(item => item.path === path && item.type === 'blob');
+            const sha = file?.sha || null;
+
+            // 如果文件 SHA 为 null，可能 Tree 还没更新，等待后重试
+            if (!sha && retryCount < maxRetries) {
+                console.log(`SHA not found for ${path}, retrying (${retryCount + 1}/${maxRetries})...`);
+                // 使用更长的等待时间：1s, 2s, 3s, 4s, 5s
+                await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
+                return this.getFileSha(owner, repo, path, retryCount + 1);
+            }
+
+            return sha;
+        } catch (error: any) {
+            if (error.status !== 404) {
+                console.error('[Git Sync] Failed to get file SHA:', path, error);
+            }
+            return null;
         }
     }
 

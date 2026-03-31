@@ -120,6 +120,7 @@ const translations = {
         pleaseConfigRepo: '请先配置仓库',
         notAuthenticated: '未认证',
         repoNotConfigured: '仓库未配置',
+        downloadFailed: '下载文件失败：{path}',
 
         // 状态
         statusSynced: '已同步',
@@ -251,6 +252,7 @@ const translations = {
         pleaseConfigRepo: 'Please configure repository first',
         notAuthenticated: 'Not authenticated',
         repoNotConfigured: 'Repository not configured',
+        downloadFailed: 'Failed to download file: {path}',
 
         // Status
         statusSynced: 'Synced',

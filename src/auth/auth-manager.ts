@@ -23,6 +23,7 @@ export class AuthManager {
         if (success) {
             this.user = await this.client.getCurrentUser();
             if (this.user) {
+                console.log('[Git Sync] Authenticated as:', this.user.login);
                 this.notifyAuthChange();
                 return true;
             }

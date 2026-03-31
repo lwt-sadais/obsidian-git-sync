@@ -1,4 +1,4 @@
-import { Menu, Notice } from 'obsidian';
+import { Menu } from 'obsidian';
 import GitSyncPlugin from '../main';
 import { t } from '../i18n';
 import { ConflictResolutionModal } from './conflict-modal';
@@ -128,13 +128,7 @@ export class StatusBarManager {
         // 日常同步（双向）
         menu.addItem((item) => {
             item.setTitle(t('menuSyncNow'))
-                .onClick(() => {
-                    if (!this.plugin.isAuthenticated) {
-                        new Notice(t('pleaseLogin'));
-                        return;
-                    }
-                    this.plugin.syncNow();
-                });
+                .onClick(() => this.plugin.syncNow());
         });
 
         menu.addSeparator();
@@ -142,33 +136,13 @@ export class StatusBarManager {
         // 以远程为准
         menu.addItem((item) => {
             item.setTitle(t('menuPullFromRemote'))
-                .onClick(() => {
-                    if (!this.plugin.isAuthenticated) {
-                        new Notice(t('pleaseLogin'));
-                        return;
-                    }
-                    if (!this.plugin.settings.repoOwner || !this.plugin.settings.repoName) {
-                        new Notice(t('pleaseConfigRepo'));
-                        return;
-                    }
-                    this.plugin.pullFromRemote();
-                });
+                .onClick(() => this.plugin.pullFromRemote());
         });
 
         // 以本地为准
         menu.addItem((item) => {
             item.setTitle(t('menuPushToRemote'))
-                .onClick(() => {
-                    if (!this.plugin.isAuthenticated) {
-                        new Notice(t('pleaseLogin'));
-                        return;
-                    }
-                    if (!this.plugin.settings.repoOwner || !this.plugin.settings.repoName) {
-                        new Notice(t('pleaseConfigRepo'));
-                        return;
-                    }
-                    this.plugin.fullSync();
-                });
+                .onClick(() => this.plugin.fullSync());
         });
 
         // 如果有冲突，显示冲突解决选项

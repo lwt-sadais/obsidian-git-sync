@@ -15,6 +15,13 @@ export const TEMP_FILE_NAMES = [
     '新笔记'
 ];
 
+// 检查是否为临时文件名
+export function isTempFileName(fileName: string): boolean {
+    return TEMP_FILE_NAMES.some(tempName =>
+        fileName === tempName || fileName.startsWith(tempName + '-')
+    );
+}
+
 // 同步结果
 export interface SyncResult {
     success: boolean;
@@ -117,9 +124,7 @@ export class SyncEngine {
             }
 
             // 检查是否为临时文件名
-            if (TEMP_FILE_NAMES.some(tempName =>
-                file.basename === tempName || file.basename.startsWith(tempName + '-')
-            )) {
+            if (isTempFileName(file.basename)) {
                 result.skippedFiles++;
                 return false;
             }
@@ -329,6 +334,11 @@ export class SyncEngine {
                 // 本地文件不存在，创建新文件
                 this.isDownloading = true;
                 try {
+                    // 确保父目录存在
+                    const parentPath = path.substring(0, path.lastIndexOf('/'));
+                    if (parentPath) {
+                        await this.ensureFolderExists(parentPath);
+                    }
                     await this.vault.createBinary(path, content);
                 } finally {
                     this.isDownloading = false;
@@ -345,8 +355,26 @@ export class SyncEngine {
             return true;
         } catch (error) {
             console.error('Failed to download file:', path, error);
+            new Notice(t('downloadFailed', { path }));
             return false;
         }
+    }
+
+    // 确保目录存在（递归创建）
+    private async ensureFolderExists(folderPath: string): Promise<void> {
+        const folder = this.vault.getAbstractFileByPath(folderPath);
+        if (folder instanceof TFolder) {
+            return; // 目录已存在
+        }
+
+        // 递归创建父目录
+        const parentPath = folderPath.substring(0, folderPath.lastIndexOf('/'));
+        if (parentPath) {
+            await this.ensureFolderExists(parentPath);
+        }
+
+        // 创建当前目录
+        await this.vault.createFolder(folderPath);
     }
 
     // 从远程全量拉取
@@ -421,8 +449,8 @@ export class SyncEngine {
                     continue;
                 }
 
-                // 下载文件（强制覆盖本地，因为是"以远程为准"）
-                const success = await this.downloadFile(remoteFile.path, true);
+                // 下载文件（强制覆盖本地，因为是"以远程为准"；传入 SHA 避免编码问题）
+                const success = await this.downloadFile(remoteFile.path, true, remoteFile.sha);
                 if (success) {
                     result.uploadedFiles++;
                 } else {
@@ -438,8 +466,7 @@ export class SyncEngine {
 
             // 检查本地是否有远程不存在的文件（远程已删除）
             const localFiles = this.getAllFiles();
-            const tempFileNames = TEMP_FILE_NAMES;
-
+            
             for (const localFile of localFiles) {
                 // 跳过排除规则
                 if (this.shouldExcludeFile(localFile.path)) {
@@ -447,10 +474,7 @@ export class SyncEngine {
                 }
 
                 // 跳过临时文件名
-                const fileName = localFile.basename;
-                if (tempFileNames.some(tempName =>
-                    fileName === tempName || fileName.startsWith(tempName + '-')
-                )) {
+                if (isTempFileName(localFile.basename)) {
                     continue;
                 }
 
@@ -546,8 +570,7 @@ export class SyncEngine {
             }
 
             // 第二步：拉取远程变更（检测冲突，不强制覆盖）
-            const tempFileNames = TEMP_FILE_NAMES;
-            const totalRemoteFiles = remoteFiles.length;
+                        const totalRemoteFiles = remoteFiles.length;
             let processedRemoteFiles = 0;
 
             for (const remoteFile of remoteFiles) {
@@ -658,10 +681,7 @@ export class SyncEngine {
                 }
 
                 // 跳过临时文件名
-                const fileName = localFile.basename;
-                if (tempFileNames.some(tempName =>
-                    fileName === tempName || fileName.startsWith(tempName + '-')
-                )) {
+                if (isTempFileName(localFile.basename)) {
                     continue;
                 }
 
@@ -682,7 +702,7 @@ export class SyncEngine {
                     new Date(localFile.stat.mtime) > new Date(fileState.localModified);
 
                 if (needsUpload) {
-                    const success = await this.uploadSingleFileWithSha(localFile, remoteInfo?.sha);
+                    const success = await this.uploadSingleFile(localFile, remoteInfo?.sha);
                     if (success) {
                         uploadCount++;
                     } else {
@@ -723,59 +743,8 @@ export class SyncEngine {
         }
     }
 
-    // 上传单个文件（使用已知的 SHA，减少 API 调用）
-    private async uploadSingleFileWithSha(file: TFile, knownRemoteSha?: string): Promise<boolean> {
-        if (!this.client) {
-            return false;
-        }
-
-        const { repoOwner, repoName } = this.plugin.settings;
-        if (!repoOwner || !repoName) {
-            return false;
-        }
-
-        try {
-            const content = await this.vault.readBinary(file);
-            const base64Content = this.arrayBufferToBase64(content);
-
-            // 使用已知的 SHA（如果有），否则获取远程 SHA
-            let sha = knownRemoteSha;
-            if (sha === undefined) {
-                const existingFile = await this.client.getFile({
-                    owner: repoOwner,
-                    repo: repoName,
-                    path: file.path
-                });
-                sha = existingFile?.sha;
-            }
-
-            const uploadResult = await this.client.uploadFile({
-                owner: repoOwner,
-                repo: repoName,
-                path: file.path,
-                message: sha ? `Update ${file.path}` : `Upload ${file.path}`,
-                content: base64Content,
-                sha: sha
-            });
-
-            if (uploadResult) {
-                await this.plugin.stateManager.updateFileSynced(
-                    file.path,
-                    uploadResult.sha,
-                    new Date(file.stat.mtime).toISOString()
-                );
-                return true;
-            }
-
-            return false;
-        } catch (error) {
-            console.error('Failed to upload file:', file.path, error);
-            return false;
-        }
-    }
-
     // 上传单个文件
-    async uploadSingleFile(file: TFile): Promise<boolean> {
+    async uploadSingleFile(file: TFile, knownRemoteSha?: string): Promise<boolean> {
         if (!this.client) {
             return false;
         }
@@ -791,9 +760,7 @@ export class SyncEngine {
         }
 
         // 检查是否为临时文件名
-        if (TEMP_FILE_NAMES.some(tempName =>
-            file.basename === tempName || file.basename.startsWith(tempName + '-')
-        )) {
+        if (isTempFileName(file.basename)) {
             console.log('Skipping temp file:', file.path);
             return false;
         }
@@ -808,20 +775,16 @@ export class SyncEngine {
             const content = await this.vault.readBinary(file);
             const base64Content = this.arrayBufferToBase64(content);
 
-            // 获取远程文件 SHA（如果存在）
-            const existingFile = await this.client.getFile({
-                owner: repoOwner,
-                repo: repoName,
-                path: file.path
-            });
+            // 使用已知的 SHA（如果有），否则通过 Tree API 获取
+            const sha = knownRemoteSha ?? await this.client.getFileSha(repoOwner, repoName, file.path);
 
             const uploadResult = await this.client.uploadFile({
                 owner: repoOwner,
                 repo: repoName,
                 path: file.path,
-                message: existingFile ? `Update ${file.path}` : `Upload ${file.path}`,
+                message: sha ? `Update ${file.path}` : `Upload ${file.path}`,
                 content: base64Content,
-                sha: existingFile?.sha
+                sha: sha
             });
 
             if (uploadResult) {
@@ -852,16 +815,11 @@ export class SyncEngine {
         }
 
         try {
-            // 先获取远程文件的 SHA
-            const remoteFile = await this.client.getFile({
-                owner: repoOwner,
-                repo: repoName,
-                path: path
-            });
+            // 通过 Tree API 获取远程文件的 SHA（避免 Contents API 编码问题）
+            const remoteSha = await this.client.getFileSha(repoOwner, repoName, path);
 
-            if (!remoteFile) {
-                // 远程文件不存在，无需删除
-                console.log('Remote file not found, skip delete:', path);
+            if (!remoteSha) {
+                // 远程文件不存在，无需删除（静默返回成功）
                 return true;
             }
 
@@ -871,7 +829,7 @@ export class SyncEngine {
                 repo: repoName,
                 path: path,
                 message: `Delete ${path}`,
-                sha: remoteFile.sha
+                sha: remoteSha
             });
 
             if (success) {

@@ -76,28 +76,26 @@ export class StateManager {
         await this.saveState();
     }
 
-    // 标记文件待同步
-    async markFilePending(path: string, localModified: string): Promise<void> {
+    // 设置文件状态（通用方法）
+    private async setFileStatus(path: string, status: 'synced' | 'pending' | 'conflict', localModified: string): Promise<void> {
         const existing = this.state.fileStates[path];
         this.state.fileStates[path] = {
             localPath: path,
             remoteSha: existing?.remoteSha || '',
             localModified: localModified,
-            status: 'pending'
+            status: status
         };
         await this.saveState();
     }
 
+    // 标记文件待同步
+    async markFilePending(path: string, localModified: string): Promise<void> {
+        await this.setFileStatus(path, 'pending', localModified);
+    }
+
     // 标记文件冲突
     async markFileConflict(path: string, localModified: string): Promise<void> {
-        const existing = this.state.fileStates[path];
-        this.state.fileStates[path] = {
-            localPath: path,
-            remoteSha: existing?.remoteSha || '',
-            localModified: localModified,
-            status: 'conflict'
-        };
-        await this.saveState();
+        await this.setFileStatus(path, 'conflict', localModified);
     }
 
     // 获取所有待同步文件

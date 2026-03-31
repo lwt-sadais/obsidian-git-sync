@@ -2,8 +2,9 @@ import { App, Plugin, PluginSettingTab, Setting, Notice, TFile } from 'obsidian'
 import { AuthManager } from './auth/auth-manager';
 import { encryptToken, decryptToken, isEncrypted } from './auth/encryption';
 import { AuthStatus, GitHubRepository } from './api/types';
+import { GitHubClient } from './api/github';
 import { RepoManager, CreateRepoModal, SelectRepoModal } from './ui/repo-manager';
-import { SyncEngine, TEMP_FILE_NAMES } from './sync/sync-engine';
+import { SyncEngine, isTempFileName } from './sync/sync-engine';
 import { StateManager } from './sync/state-manager';
 import { StatusBarManager } from './ui/status-bar';
 import { t } from './i18n';
@@ -46,6 +47,15 @@ const DEFAULT_SETTINGS: GitSyncSettings = {
     excludedExtensions: []
 }
 
+// 延迟操作类型
+interface DeferredOperation {
+    type: 'delete' | 'modify' | 'rename';
+    path: string;
+    oldPath?: string;  // 仅 rename 使用
+    file?: TFile;      // 仅 modify 和 rename 使用
+    timestamp: number;
+}
+
 export default class GitSyncPlugin extends Plugin {
     settings: GitSyncSettings;
     authManager: AuthManager;
@@ -60,6 +70,9 @@ export default class GitSyncPlugin extends Plugin {
 
     // 同步锁：防止 bidirectionalSync/fullSync/pullFromRemote 与 syncPendingFiles 并发执行
     isSyncing: boolean = false;
+
+    // 延迟操作队列：同步过程中的用户操作存入此队列，同步完成后处理
+    deferredOperations: DeferredOperation[] = [];
 
     async onload() {
         await this.loadSettings();
@@ -225,11 +238,19 @@ export default class GitSyncPlugin extends Plugin {
         }
 
         // 检查是否为临时文件名（新建笔记时的默认名称，直接跳过）
-        const fileName = file.basename;
-        if (TEMP_FILE_NAMES.some(tempName =>
-            fileName === tempName || fileName.startsWith(tempName + '-')
-        )) {
+        if (isTempFileName(file.basename)) {
             // 跳过临时文件名，不同步
+            return;
+        }
+
+        // 大同步正在运行时，加入延迟队列
+        if (this.isSyncing) {
+            this.addDeferredOperation({
+                type: 'modify',
+                path: file.path,
+                file: file,
+                timestamp: Date.now()
+            });
             return;
         }
 
@@ -256,6 +277,86 @@ export default class GitSyncPlugin extends Plugin {
         }, 300);
     }
 
+    // 添加延迟操作到队列
+    private addDeferredOperation(operation: DeferredOperation) {
+        // 去重：如果已有相同路径的操作，更新它
+        const existingIndex = this.deferredOperations.findIndex(op => op.path === operation.path);
+        if (existingIndex >= 0) {
+            // 如果新操作是删除，替换之前的操作（删除优先级最高）
+            if (operation.type === 'delete') {
+                this.deferredOperations[existingIndex] = operation;
+            }
+            // 如果新操作是修改，且之前不是删除，更新时间戳
+            else if (operation.type === 'modify' && this.deferredOperations[existingIndex].type !== 'delete') {
+                this.deferredOperations[existingIndex] = operation;
+            }
+        } else {
+            this.deferredOperations.push(operation);
+        }
+        console.log('[Git Sync] Deferred operation added:', operation.type, operation.path);
+    }
+
+    // 处理延迟操作队列（同步完成后调用）
+    private async processDeferredOperations() {
+        if (this.deferredOperations.length === 0) {
+            return;
+        }
+
+        console.log('[Git Sync] Processing deferred operations:', this.deferredOperations.length);
+
+        // 复制队列并清空原队列
+        const operations = [...this.deferredOperations];
+        this.deferredOperations = [];
+
+        // 按时间排序（先发生的先处理）
+        operations.sort((a, b) => a.timestamp - b.timestamp);
+
+        for (const op of operations) {
+            try {
+                switch (op.type) {
+                    case 'delete':
+                        await this.deleteRemoteFile(op.path);
+                        break;
+
+                    case 'modify': {
+                        // 检查文件是否还存在
+                        const file = this.app.vault.getAbstractFileByPath(op.path);
+                        if (!(file instanceof TFile)) break;
+
+                        // 检查是否需要上传（可能已被同步）
+                        const fileState = this.stateManager.getFileState(op.path);
+                        const localModified = new Date(file.stat.mtime);
+                        if (fileState && localModified <= new Date(fileState.localModified)) {
+                            // 文件已同步，跳过
+                            console.log('[Git Sync] Skipping deferred modify, already synced:', op.path);
+                            break;
+                        }
+
+                        await this.syncEngine.uploadSingleFile(file);
+                        break;
+                    }
+
+                    case 'rename': {
+                        // 删除旧路径的远程文件
+                        if (op.oldPath) {
+                            await this.deleteRemoteFile(op.oldPath);
+                        }
+                        // 上传新路径的文件
+                        const file = this.app.vault.getAbstractFileByPath(op.path);
+                        if (file instanceof TFile) {
+                            await this.syncEngine.uploadSingleFile(file);
+                        }
+                        break;
+                    }
+                }
+            } catch (error) {
+                console.error('[Git Sync] Failed to process deferred operation:', op, error);
+            }
+        }
+
+        console.log('[Git Sync] Deferred operations processed');
+    }
+
     // 处理文件删除
     handleFileDelete(file: TFile) {
         // 双向同步正在删除本地文件，跳过以防止触发 deleteRemoteFile 连锁操作
@@ -267,17 +368,31 @@ export default class GitSyncPlugin extends Plugin {
             return;
         }
 
+        // 检查是否为临时文件名
+        const isTempFile = isTempFileName(file.basename);
+
+        // 检查是否在排除规则中
+        const isExcluded = this.syncEngine.shouldExcludeFile(file.path);
+
+        // 大同步正在运行时，加入延迟队列
+        if (this.isSyncing) {
+            if (!isTempFile && !isExcluded) {
+                this.addDeferredOperation({
+                    type: 'delete',
+                    path: file.path,
+                    timestamp: Date.now()
+                });
+            }
+            // 清除文件状态
+            this.stateManager.clearFileState(file.path);
+            return;
+        }
+
         // 清除文件状态
         this.stateManager.clearFileState(file.path);
 
-        // 检查是否为临时文件名（如果是，不需要删除远程文件）
-        const fileName = file.basename;
-        const wasTempFile = TEMP_FILE_NAMES.some(tempName =>
-            fileName === tempName || fileName.startsWith(tempName + '-')
-        );
-
         // 如果不是临时文件且不在排除规则中，删除远程文件
-        if (!wasTempFile && !this.syncEngine.shouldExcludeFile(file.path)) {
+        if (!isTempFile && !isExcluded) {
             // 直接删除远程文件
             this.deleteRemoteFile(file.path);
         }
@@ -315,29 +430,43 @@ export default class GitSyncPlugin extends Plugin {
         // 清除旧文件状态
         this.stateManager.clearFileState(oldPath);
 
-        // 检查旧路径是否为临时文件名（如果是，不需要删除远程文件）
-        const oldFileName = this.getFileNameFromPath(oldPath);
-        const wasTempFile = TEMP_FILE_NAMES.some(tempName =>
-            oldFileName === tempName || oldFileName.startsWith(tempName + '-')
-        );
+        // 检查旧路径是否为临时文件名
+        const wasTempFile = isTempFileName(this.getFileNameFromPath(oldPath));
+
+        // 检查新文件名是否为临时名称
+        const isTempFile = isTempFileName(file.basename);
+
+        // 检查排除规则
+        const isOldExcluded = this.syncEngine.shouldExcludeFile(oldPath);
+        const isNewExcluded = this.syncEngine.shouldExcludeFile(file.path);
+
+        // 大同步正在运行时，加入延迟队列
+        if (this.isSyncing) {
+            if (!wasTempFile && !isOldExcluded) {
+                this.addDeferredOperation({
+                    type: 'rename',
+                    path: file.path,
+                    oldPath: oldPath,
+                    file: file,
+                    timestamp: Date.now()
+                });
+            }
+            return;
+        }
 
         // 如果旧路径不是临时文件，说明可能已同步到 GitHub，需要删除
-        if (!wasTempFile && !this.syncEngine.shouldExcludeFile(oldPath)) {
+        if (!wasTempFile && !isOldExcluded) {
             // 直接删除远程旧路径文件
             this.deleteRemoteFile(oldPath);
         }
 
-        // 检查新文件名是否为临时名称
-        const fileName = file.basename;
-        if (TEMP_FILE_NAMES.some(tempName =>
-            fileName === tempName || fileName.startsWith(tempName + '-')
-        )) {
-            // 新名称仍然是临时名称，跳过
+        // 新名称是临时名称，跳过
+        if (isTempFile) {
             return;
         }
 
         // 新名称不是临时名称，添加到同步队列
-        if (!this.syncEngine.shouldExcludeFile(file.path)) {
+        if (!isNewExcluded) {
             this.addToSyncQueue(file);
         }
     }
@@ -411,6 +540,30 @@ export default class GitSyncPlugin extends Plugin {
         // 更新状态栏待同步数量
         const pendingCount = this.stateManager.getPendingFiles().length;
         this.statusBar.setPendingCount(pendingCount);
+
+        // 处理同步过程中的延迟操作
+        await this.processDeferredOperations();
+    }
+
+    // 检查同步前置条件，返回客户端（如果准备就绪）
+    private ensureSyncReady(): GitHubClient | null {
+        if (!this.isAuthenticated) {
+            new Notice(t('pleaseLogin'));
+            return null;
+        }
+
+        if (!this.settings.repoOwner || !this.settings.repoName) {
+            new Notice(t('pleaseConfigRepo'));
+            return null;
+        }
+
+        const client = this.authManager.getClient();
+        if (!client) {
+            new Notice(t('notAuthenticated'));
+            return null;
+        }
+
+        return client;
     }
 
     async syncNow() {
@@ -421,21 +574,8 @@ export default class GitSyncPlugin extends Plugin {
     async fullSync() {
         console.log('Full sync triggered');
 
-        if (!this.isAuthenticated) {
-            new Notice(t('pleaseLogin'));
-            return;
-        }
-
-        if (!this.settings.repoOwner || !this.settings.repoName) {
-            new Notice(t('pleaseConfigRepo'));
-            return;
-        }
-
-        const client = this.authManager.getClient();
-        if (!client) {
-            new Notice(t('notAuthenticated'));
-            return;
-        }
+        const client = this.ensureSyncReady();
+        if (!client) return;
 
         this.syncEngine.setClient(client);
         this.isSyncing = true;
@@ -443,27 +583,15 @@ export default class GitSyncPlugin extends Plugin {
             await this.syncEngine.fullSync();
         } finally {
             this.isSyncing = false;
+            await this.processDeferredOperations();
         }
     }
 
     async pullFromRemote() {
         console.log('Pull from remote triggered');
 
-        if (!this.isAuthenticated) {
-            new Notice(t('pleaseLogin'));
-            return;
-        }
-
-        if (!this.settings.repoOwner || !this.settings.repoName) {
-            new Notice(t('pleaseConfigRepo'));
-            return;
-        }
-
-        const client = this.authManager.getClient();
-        if (!client) {
-            new Notice(t('notAuthenticated'));
-            return;
-        }
+        const client = this.ensureSyncReady();
+        if (!client) return;
 
         this.syncEngine.setClient(client);
         this.isSyncing = true;
@@ -471,27 +599,15 @@ export default class GitSyncPlugin extends Plugin {
             await this.syncEngine.pullFromRemote();
         } finally {
             this.isSyncing = false;
+            await this.processDeferredOperations();
         }
     }
 
     async bidirectionalSync() {
         console.log('Bidirectional sync triggered');
 
-        if (!this.isAuthenticated) {
-            new Notice(t('pleaseLogin'));
-            return;
-        }
-
-        if (!this.settings.repoOwner || !this.settings.repoName) {
-            new Notice(t('pleaseConfigRepo'));
-            return;
-        }
-
-        const client = this.authManager.getClient();
-        if (!client) {
-            new Notice(t('notAuthenticated'));
-            return;
-        }
+        const client = this.ensureSyncReady();
+        if (!client) return;
 
         this.syncEngine.setClient(client);
         this.isSyncing = true;
@@ -499,6 +615,7 @@ export default class GitSyncPlugin extends Plugin {
             await this.syncEngine.bidirectionalSync();
         } finally {
             this.isSyncing = false;
+            await this.processDeferredOperations();
         }
     }
 }
