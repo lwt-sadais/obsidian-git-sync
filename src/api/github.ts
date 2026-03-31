@@ -192,9 +192,11 @@ export class GitHubClient {
         }
     }
 
-    // 上传/更新文件
-    async uploadFile(options: UploadFileOptions): Promise<{ sha: string; path: string } | null> {
+    // 上传/更新文件（带重试机制处理 409 冲突）
+    async uploadFile(options: UploadFileOptions, retryCount = 0): Promise<{ sha: string; path: string } | null> {
         if (!this.octokit) return null;
+
+        const maxRetries = 2;
 
         try {
             const params: any = {
@@ -216,7 +218,23 @@ export class GitHubClient {
                 sha: data.content.sha,
                 path: data.content.path
             };
-        } catch (error) {
+        } catch (error: any) {
+            // 409 Conflict: SHA 不匹配，重新获取 SHA 并重试
+            if (error.status === 409 && retryCount < maxRetries) {
+                console.log(`SHA conflict for ${options.path}, retrying (${retryCount + 1}/${maxRetries})...`);
+
+                // 重新获取远程文件 SHA
+                const existingFile = await this.getFile({
+                    owner: options.owner,
+                    repo: options.repo,
+                    path: options.path
+                });
+
+                // 使用新的 SHA 重试
+                const newOptions = { ...options, sha: existingFile?.sha };
+                return this.uploadFile(newOptions, retryCount + 1);
+            }
+
             console.error('Failed to upload file:', error);
             return null;
         }
@@ -243,28 +261,62 @@ export class GitHubClient {
         }
     }
 
-    // 递归获取仓库所有文件
-    async getAllFiles(owner: string, repo: string, path: string = ''): Promise<GitHubFile[]> {
+    // 获取仓库默认分支
+    async getDefaultBranch(owner: string, repo: string): Promise<string> {
+        if (!this.octokit) return 'main';
+
+        try {
+            const { data } = await this.octokit.repos.get({ owner, repo });
+            return data.default_branch || 'main';
+        } catch (error) {
+            console.error('Failed to get default branch:', error);
+            return 'main';
+        }
+    }
+
+    // 获取仓库所有文件（使用 Git Tree API，一次请求获取所有文件）
+    async getAllFiles(owner: string, repo: string): Promise<GitHubFile[]> {
         if (!this.octokit) return [];
 
-        const files: GitHubFile[] = [];
-        
         try {
-            const items = await this.getDirectory({ owner, repo, path });
+            // 获取默认分支
+            const defaultBranch = await this.getDefaultBranch(owner, repo);
 
-            for (const item of items) {
-                if (item.type === 'file') {
-                    files.push(item);
-                } else if (item.type === 'dir') {
-                    const subFiles = await this.getAllFiles(owner, repo, item.path);
-                    files.push(...subFiles);
-                }
-            }
+            // 获取默认分支的最新 commit
+            const { data: refData } = await this.octokit.git.getRef({
+                owner,
+                repo,
+                ref: `heads/${defaultBranch}`
+            });
+
+            // 获取递归文件树
+            const { data: treeData } = await this.octokit.git.getTree({
+                owner,
+                repo,
+                tree_sha: refData.object.sha,
+                recursive: 'true'
+            });
+
+            // 过滤出文件（排除目录）
+            const files: GitHubFile[] = treeData.tree
+                .filter(item => item.type === 'blob')
+                .map(item => ({
+                    name: item.path?.split('/').pop() || '',
+                    path: item.path || '',
+                    sha: item.sha || '',
+                    size: item.size || 0,
+                    url: item.url || '',
+                    html_url: '',
+                    git_url: item.url || '',
+                    download_url: '',
+                    type: 'file' as const
+                }));
+
+            return files;
         } catch (error) {
             console.error('Failed to get all files:', error);
+            return [];
         }
-
-        return files;
     }
 
     // 获取 Token
