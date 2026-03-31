@@ -1,6 +1,7 @@
 import { Menu, Notice } from 'obsidian';
 import GitSyncPlugin from '../main';
 import { t } from '../i18n';
+import { ConflictResolutionModal } from './conflict-modal';
 
 // 同步状态类型
 export type SyncStatus = 'synced' | 'syncing' | 'pending' | 'error' | 'conflict' | 'offline';
@@ -176,7 +177,8 @@ export class StatusBarManager {
             menu.addItem((item) => {
                 item.setTitle(t('menuConflicts', { count: this.conflictCount }))
                     .onClick(() => {
-                        new Notice('Conflict resolution coming soon');
+                        const modal = new ConflictResolutionModal(this.plugin.app, this.plugin);
+                        modal.open();
                     });
             });
         }
@@ -249,7 +251,8 @@ export class StatusBarManager {
     }
 
     // 更新同步进度
-    updateProgress(current: number, total: number): void {
-        this.setStatus('syncing', `${current}/${total}`);
+    updateProgress(current: number, total: number, phase?: 'pull' | 'push'): void {
+        const phaseText = phase === 'pull' ? '↓' : phase === 'push' ? '↑' : '';
+        this.setStatus('syncing', `${phaseText}${current}/${total}`);
     }
 }

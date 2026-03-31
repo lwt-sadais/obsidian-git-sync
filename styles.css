@@ -88,3 +88,127 @@
 .git-sync-file-status.excluded {
     background-color: var(--text-faint);
 }
+
+/* Conflict Resolution Modal */
+.git-sync-conflict-modal {
+    width: 600px;
+    max-height: 80vh;
+}
+
+.git-sync-conflict-desc {
+    color: var(--text-muted);
+    margin-bottom: 16px;
+}
+
+.git-sync-conflict-list {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    padding: 8px;
+}
+
+.git-sync-conflict-item {
+    padding: 12px;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.git-sync-conflict-item:last-child {
+    border-bottom: none;
+}
+
+.git-sync-conflict-item-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.git-sync-conflict-icon {
+    font-size: 16px;
+}
+
+.git-sync-conflict-path {
+    font-weight: 500;
+    flex: 1;
+}
+
+.git-sync-conflict-binary-badge {
+    font-size: 10px;
+    padding: 2px 6px;
+    background-color: var(--background-modifier-border);
+    border-radius: 4px;
+    color: var(--text-muted);
+}
+
+.git-sync-conflict-options {
+    margin-bottom: 8px;
+}
+
+.git-sync-conflict-diff-button {
+    margin-top: 4px;
+}
+
+.git-sync-conflict-buttons {
+    margin-top: 16px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+/* Conflict Diff Modal */
+.git-sync-conflict-diff-modal {
+    width: 800px;
+    max-height: 90vh;
+}
+
+.git-sync-conflict-diff-path {
+    color: var(--text-muted);
+    margin-bottom: 16px;
+}
+
+.git-sync-conflict-diff-container {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.git-sync-conflict-diff-section {
+    flex: 1;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.git-sync-conflict-diff-section h3 {
+    margin: 0;
+    padding: 8px 12px;
+    background-color: var(--background-secondary);
+    font-size: 14px;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.git-sync-conflict-diff-content {
+    padding: 12px;
+    max-height: 400px;
+    overflow-y: auto;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+/* Conflict blocks in merged content */
+.git-sync-conflict-block {
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    padding: 8px;
+    margin: 8px 0;
+}
+
+.git-sync-conflict-block-local {
+    border-left: 3px solid var(--text-warning);
+}
+
+.git-sync-conflict-block-remote {
+    border-left: 3px solid var(--text-error);
+}
