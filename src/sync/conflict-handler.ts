@@ -1,5 +1,6 @@
 import { TFile, Vault, Notice } from 'obsidian';
 import GitSyncPlugin from '../main';
+import { BINARY_EXTENSIONS } from '../constants';
 import { t } from '../i18n';
 
 // 冲突解决策略
@@ -31,16 +32,12 @@ export class ConflictHandler {
         this.vault = plugin.app.vault;
     }
 
-    // 判断是否为二进制文件
+    /**
+     * 判断是否为二进制文件
+     */
     isBinaryFile(path: string): boolean {
-        const binaryExtensions = [
-            '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico',
-            '.pdf', '.zip', '.tar', '.gz', '.rar',
-            '.mp3', '.mp4', '.wav', '.avi', '.mov',
-            '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'
-        ];
         const ext = path.toLowerCase().substring(path.lastIndexOf('.'));
-        return binaryExtensions.includes(ext);
+        return BINARY_EXTENSIONS.includes(ext as any);
     }
 
     // 生成冲突副本文件名

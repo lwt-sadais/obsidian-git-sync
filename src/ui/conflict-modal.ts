@@ -1,6 +1,7 @@
 import { App, Modal, Setting, TFile, Notice, MarkdownRenderer, Component } from 'obsidian';
 import GitSyncPlugin from '../main';
 import { ConflictHandler, ConflictFile, ConflictResolution } from '../sync/conflict-handler';
+import { base64ToString } from '../utils/encoding';
 import { t } from '../i18n';
 
 // 冲突解决面板
@@ -94,7 +95,7 @@ export class ConflictResolutionModal extends Modal {
                 }
 
                 // 解码远程内容
-                const remoteContent = this.base64ToString(remoteFile.content);
+                const remoteContent = base64ToString(remoteFile.content);
 
                 const isBinary = this.conflictHandler.isBinaryFile(path);
 
@@ -113,16 +114,6 @@ export class ConflictResolutionModal extends Modal {
                 console.error('Failed to load conflict file:', path, error);
             }
         }
-    }
-
-    // Base64 转字符串
-    base64ToString(base64: string): string {
-        const binary = atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-            bytes[i] = binary.charCodeAt(i);
-        }
-        return new TextDecoder('utf-8').decode(bytes);
     }
 
     // 渲染单个冲突项
