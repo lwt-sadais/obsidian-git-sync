@@ -38,9 +38,9 @@
 │         （Pull 结束后通过 processDeferredOperations 处理）        │
 │  → NO:  继续                                                     │
 │                                                                 │
-│  isSyncing（大同步进行中）？                                       │
+│  operationManager.isBlocking（阻塞操作进行中）？                   │
 │  → YES: 加入 deferredOperations 队列                            │
-│         （大同步结束后通过 processDeferredOperations 处理）         │
+│         （操作结束后通过 processDeferredOperations 处理）          │
 │  → NO:  addToSyncQueue(file)                                    │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
@@ -61,12 +61,16 @@
 │  syncPendingFiles()                                             │
 │                                                                 │
 │  1. 检查前置条件（认证、仓库配置）                                   │
-│  2. 获取待同步文件列表：getPendingFiles()                          │
-│  3. statusBar.startSyncing()                                    │
+│  2. operationManager.canStart('upload_batch')?                  │
+│     → NO: 返回（有阻塞操作进行中）                                  │
+│  3. operationManager.start('upload_batch')                      │
+│  4. 获取待同步文件列表：getPendingFiles()                          │
+│  5. statusBar.startSyncing()                                    │
 │     → 状态栏显示 "⟳ 同步中..."                                     │
-│  4. 循环处理每个文件：                                             │
+│  6. 循环处理每个文件：                                             │
 │     ┌─────────────────────────────────────────────┐             │
 │     │ statusBar.updateProgress(i/total, 'push')   │             │
+│     │ operationManager.updateProgress(i/total)    │             │
 │     │ → 显示 "↑i/total"                           │             │
 │     │                                             │             │
 │     │ syncEngine.uploadSingleFile(file, sha)      │             │
@@ -78,11 +82,12 @@
 │     │       → 状态设为 synced，记录 remoteSha      │             │
 │     │ 失败：errorCount++                          │             │
 │     └─────────────────────────────────────────────┘             │
-│  5. statusBar.endSync(success)                                  │
+│  7. operationManager.end()                                      │
+│  8. statusBar.endSync(success)                                  │
 │     → 显示 "✓ 已同步"                                             │
-│  6. Notice: "已同步 n 个文件"                                      │
-│  7. processDeferredOperations()                                 │
-│     → 处理大同步期间积压的操作                                      │
+│  9. Notice: "已同步 n 个文件"                                      │
+│  10. processDeferredOperations()                                │
+│      → 处理阻塞操作期间积压的操作                                    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -132,7 +137,7 @@ Pull 结束 → processDeferredOperations()
 │  stateManager.clearFileState(path)                              │
 │  → 清除本地文件状态记录                                            │
 │                                                                 │
-│  大同步进行中？                                                   │
+│  operationManager.isBlocking（阻塞操作进行中）？                    │
 │  → YES: 加入 deferredOperations 队列                             │
 │  → NO:  addToDeleteQueue(path)                                  │
 └──────────────────────────┬──────────────────────────────────────┘
@@ -239,12 +244,14 @@ Pull 结束 → processDeferredOperations()
 │  前置检查：                                                       │
 │  1. isAuthenticated?                                            │
 │  2. repoOwner + repoName 配置？                                  │
+│  3. operationManager.canStart('bidirectional')?                 │
+│     → NO: 返回（有阻塞操作进行中）                                  │
+│                                                                 │
+│  operationManager.start('bidirectional')                        │
+│  → 阻止文件监听器触发，操作进入 deferredOperations                  │
 │                                                                 │
 │  statusBar.startSyncing()                                       │
 │  → 显示 "⟳ 同步中..."                                             │
-│                                                                 │
-│  isSyncing = true                                               │
-│  → 阻止文件监听器触发，操作进入 deferredOperations                  │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
                            ▼
@@ -336,10 +343,10 @@ Pull 结束 → processDeferredOperations()
 ┌─────────────────────────────────────────────────────────────────┐
 │  第六步：完成同步                                                  │
 │                                                                 │
+│  operationManager.end()                                         │
+│                                                                 │
 │  statusBar.endSync(success)                                     │
 │  → 显示 "✓ 已同步"                                                │
-│                                                                 │
-│  isSyncing = false                                              │
 │                                                                 │
 │  Notice: "同步完成！已处理 n 个文件"                                │
 │                                                                 │
@@ -376,7 +383,10 @@ Pull 结束 → processDeferredOperations()
 │  前置检查：ensureSyncReady()                                      │
 │  → isAuthenticated + repo 配置                                   │
 │                                                                 │
-│  isSyncing = true                                               │
+│  operationManager.canStart('pull')?                             │
+│  → NO: 返回（有阻塞操作进行中）                                     │
+│                                                                 │
+│  operationManager.start('pull')                                 │
 │  syncEngine.pullFromRemote()                                    │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
@@ -435,12 +445,12 @@ Pull 结束 → processDeferredOperations()
 ┌─────────────────────────────────────────────────────────────────┐
 │  第四步：完成                                                      │
 │                                                                 │
+│  operationManager.end()                                         │
+│                                                                 │
 │  statusBar.endSync(success)                                     │
 │                                                                 │
 │  Notice: "拉取完成！下载 n 个文件" 或                                │
 │          "拉取完成！下载 n 个文件，删除 m 个本地文件"                  │
-│                                                                 │
-│  isSyncing = false                                              │
 │                                                                 │
 │  processDeferredOperations()                                    │
 └─────────────────────────────────────────────────────────────────┘
@@ -474,7 +484,10 @@ Pull 结束 → processDeferredOperations()
 │                                                                 │
 │  前置检查：ensureSyncReady()                                      │
 │                                                                 │
-│  isSyncing = true                                               │
+│  operationManager.canStart('push')?                             │
+│  → NO: 返回（有阻塞操作进行中）                                     │
+│                                                                 │
+│  operationManager.start('push')                                 │
 │  syncEngine.fullSync()                                          │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
@@ -533,11 +546,11 @@ Pull 结束 → processDeferredOperations()
 ┌─────────────────────────────────────────────────────────────────┐
 │  第四步：完成                                                      │
 │                                                                 │
+│  operationManager.end()                                         │
+│                                                                 │
 │  statusBar.endSync(success)                                     │
 │                                                                 │
 │  Notice: "同步完成！已处理 n 个文件"                                │
-│                                                                 │
-│  isSyncing = false                                              │
 │                                                                 │
 │  processDeferredOperations()                                    │
 └─────────────────────────────────────────────────────────────────┘
@@ -553,13 +566,87 @@ Pull 结束 → processDeferredOperations()
 
 ---
 
-## 七、关键标志位说明
+## 七、OperationManager 操作管理器
 
-| 标志位 | 位置 | 作用 |
-|-------|------|------|
-| `isSyncing` | main.ts | 阻止文件监听器触发，操作进入 deferredOperations |
-| `isDownloading` | sync-download.ts | 阻止 handleFileChange 触发 |
-| `isDeletingLocalFiles` | sync-download.ts | 阻止 handleFileDelete 触发 |
+### 设计目的
+
+统一管理所有同步操作的状态，解决原有标志位分散、语义模糊的问题：
+
+1. **单一职责**：只有一个地方管理"是否忙碌"状态
+2. **操作禁用**：状态栏菜单查询 OperationManager 判断是否禁用
+3. **进度跟踪**：统一管理操作进度
+
+### 操作类型定义
+
+```typescript
+type OperationType =
+    | 'idle'              // 无操作
+    | 'bidirectional'     // 双向同步（阻塞）
+    | 'pull'              // 以远程为准（阻塞）
+    | 'push'              // 以本地为准（阻塞）
+    | 'upload_batch'      // 批量上传（非阻塞）
+    | 'delete_batch'      // 批量删除（非阻塞）
+    | 'download_single';  // 单文件下载（内部使用）
+```
+
+### 阻塞与非阻塞操作
+
+| 操作类型 | 阻塞 | 说明 |
+|---------|------|------|
+| `bidirectional` | ✓ | 双向同步期间禁止用户触发其他操作 |
+| `pull` | ✓ | Pull 期间禁止用户触发其他操作 |
+| `push` | ✓ | Push 期间禁止用户触发其他操作 |
+| `upload_batch` | ✗ | 文件监听触发的批量上传，不阻塞 |
+| `delete_batch` | ✗ | 文件监听触发的批量删除，不阻塞 |
+| `download_single` | ✗ | 内部单文件下载，不阻塞 |
+
+### 状态栏菜单禁用逻辑
+
+```
+用户点击状态栏
+    ↓
+showMenu() 获取当前操作
+    ↓
+operationManager.getCurrentOperation()
+    ↓
+判断是否阻塞（isBlocking === true）
+    ↓
+┌─────────────────────────────────────┐
+│  阻塞中：                            │
+│  • 显示 "正在同步..."                 │
+│  • 禁用所有操作菜单项                 │
+│  • 冲突解决选项仍可用                 │
+└─────────────────────────────────────┘
+┌─────────────────────────────────────┐
+│  空闲中：                            │
+│  • 显示正常菜单项                    │
+│  • Sync Now / Pull / Push 可点击     │
+└─────────────────────────────────────┘
+```
+
+### API 方法
+
+| 方法 | 说明 |
+|------|------|
+| `start(type)` | 启动操作 |
+| `end()` | 结束操作 |
+| `updateProgress(current, total, phase)` | 更新进度 |
+| `getCurrentOperation()` | 获取当前操作信息 |
+| `isBusy()` | 检查是否有操作正在进行 |
+| `isBlocking()` | 检查是否是阻塞型操作 |
+| `canStart(type)` | 检查是否可以启动新操作 |
+
+### 与原有标志位的关系
+
+| 原标志位 | 新方案 |
+|---------|--------|
+| `main.ts: isSyncing` | 已移除，使用 `operationManager.isBlocking()` |
+| `sync-download.ts: isDownloading` | 保留，用于阻止 handleFileChange |
+| `sync-download.ts: isDeletingLocalFiles` | 保留，用于阻止 handleFileDelete |
+
+**注意**：`isDownloading` 和 `isDeletingLocalFiles` 仍保留，因为它们有特定用途：
+- `isDownloading`：下载文件时避免触发 handleFileChange（防止循环）
+- `isDeletingLocalFiles`：删除本地文件时避免触发 handleFileDelete（防止循环）
 
 ---
 
