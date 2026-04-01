@@ -772,8 +772,21 @@ export class SyncEngine {
             const content = await this.vault.readBinary(file);
             const base64Content = this.arrayBufferToBase64(content);
 
-            // 使用已知的 SHA（如果有），否则通过 Tree API 获取
-            const sha = knownRemoteSha ?? await this.client.getFileSha(repoOwner, repoName, file.path);
+            // 获取文件状态，判断是否为新增文件
+            const fileState = this.plugin.stateManager.getFileState(file.path);
+            const isNewFile = !fileState || !fileState.remoteSha;
+
+            let sha: string | undefined;
+
+            if (isNewFile) {
+                // 新增文件：直接上传不带 SHA，避免不必要的 getFileSha API 调用
+                // 如果远程意外存在，uploadFile 的重试机制会自动获取 SHA
+                sha = undefined;
+            } else {
+                // 更新文件：优先使用传入的 SHA（最新），其次使用缓存 SHA
+                // 不再主动调用 getFileSha，依赖 uploadFile 的重试机制处理 SHA 失效
+                sha = knownRemoteSha ?? fileState?.remoteSha;
+            }
 
             const uploadResult = await this.client.uploadFile({
                 owner: repoOwner,

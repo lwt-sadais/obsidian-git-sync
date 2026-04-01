@@ -332,7 +332,8 @@ export default class GitSyncPlugin extends Plugin {
                             break;
                         }
 
-                        await this.syncEngine.uploadSingleFile(file);
+                        // 传入缓存的 SHA（如果有）
+                        await this.syncEngine.uploadSingleFile(file, fileState?.remoteSha);
                         break;
                     }
 
@@ -344,7 +345,9 @@ export default class GitSyncPlugin extends Plugin {
                         // 上传新路径的文件
                         const file = this.app.vault.getAbstractFileByPath(op.path);
                         if (file instanceof TFile) {
-                            await this.syncEngine.uploadSingleFile(file);
+                            // 传入缓存的 SHA（如果有）
+                            const fileState = this.stateManager.getFileState(op.path);
+                            await this.syncEngine.uploadSingleFile(file, fileState?.remoteSha);
                         }
                         break;
                     }
@@ -515,7 +518,9 @@ export default class GitSyncPlugin extends Plugin {
             for (const filePath of filesToSync) {
                 const file = this.app.vault.getAbstractFileByPath(filePath);
                 if (file instanceof TFile) {
-                    const success = await this.syncEngine.uploadSingleFile(file);
+                    // 传入缓存的 SHA（如果有），避免不必要的 getFileSha API 调用
+                    const fileState = this.stateManager.getFileState(filePath);
+                    const success = await this.syncEngine.uploadSingleFile(file, fileState?.remoteSha);
                     if (success) {
                         successCount++;
                     } else {
