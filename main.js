@@ -3971,14 +3971,15 @@ var GitHubClient = class {
       }
       if (response.status === 422 && retryCount < maxRetries) {
         console.log(`SHA missing for ${options.path}, retrying (${retryCount + 1}/${maxRetries})...`);
-        await new Promise((resolve) => setTimeout(resolve, 2e3));
         const newSha = await this.getFileSha(options.owner, options.repo, options.path);
         if (newSha) {
-          const newOptions = { ...options, sha: newSha };
-          return this.uploadFile(newOptions, retryCount + 1);
+          const newOptions2 = { ...options, sha: newSha };
+          return this.uploadFile(newOptions2, retryCount + 1);
         }
-        console.warn(`[Git Sync] Cannot get SHA for ${options.path}, skipping upload. File may need manual sync.`);
-        return null;
+        console.warn(`[Git Sync] Cannot get SHA for ${options.path}, uploading as new file.`);
+        const newOptions = { ...options };
+        delete newOptions.sha;
+        return this.uploadFile(newOptions, retryCount + 1);
       }
       const errorText = await response.text();
       console.error("Failed to upload file:", response.status, errorText);
@@ -4086,35 +4087,30 @@ var GitHubClient = class {
       return [];
     }
   }
-  // 获取单个文件的 SHA（通过 Tree API，避免 Contents API 的 URL 编码问题）
-  async getFileSha(owner, repo, path, retryCount = 0) {
-    if (!this.octokit) return null;
-    const maxRetries = 5;
+  // 获取单个文件的 SHA（使用 Contents API，单次请求，高效）
+  async getFileSha(owner, repo, path) {
+    if (!this.token) return null;
     try {
-      const defaultBranch = await this.getDefaultBranch(owner, repo);
-      const { data: branchData } = await this.octokit.repos.getBranch({
-        owner,
-        repo,
-        branch: defaultBranch
+      const url = this.buildContentsUrl(owner, repo, path);
+      const response = await fetch(url, {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${this.token}`,
+          "Accept": "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28"
+        }
       });
-      const { data: treeData } = await this.octokit.git.getTree({
-        owner,
-        repo,
-        tree_sha: branchData.commit.sha,
-        recursive: "true"
-      });
-      const file = treeData.tree.find((item) => item.path === path && item.type === "blob");
-      const sha = (file == null ? void 0 : file.sha) || null;
-      if (!sha && retryCount < maxRetries) {
-        console.log(`SHA not found for ${path}, retrying (${retryCount + 1}/${maxRetries})...`);
-        await new Promise((resolve) => setTimeout(resolve, 1e3 * (retryCount + 1)));
-        return this.getFileSha(owner, repo, path, retryCount + 1);
+      if (response.ok) {
+        const data = await response.json();
+        return data.sha;
       }
-      return sha;
+      if (response.status === 404) {
+        return null;
+      }
+      console.error("[Git Sync] Failed to get file SHA:", path, response.status);
+      return null;
     } catch (error) {
-      if (error.status !== 404) {
-        console.error("[Git Sync] Failed to get file SHA:", path, error);
-      }
+      console.error("[Git Sync] Failed to get file SHA:", path, error);
       return null;
     }
   }

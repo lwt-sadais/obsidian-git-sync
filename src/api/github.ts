@@ -242,14 +242,11 @@ export class GitHubClient {
                 return this.uploadFile(options, retryCount + 1);
             }
 
-            // 422 Unprocessable Content: 文件已存在但未提供 SHA，等待后获取 SHA 重试
+            // 422 Unprocessable Content: 文件已存在但未提供 SHA
             if (response.status === 422 && retryCount < maxRetries) {
                 console.log(`SHA missing for ${options.path}, retrying (${retryCount + 1}/${maxRetries})...`);
 
-                // 等待 Tree 更新（使用较长等待时间）
-                await new Promise(resolve => setTimeout(resolve, 2000));
-
-                // 重新获取远程文件 SHA
+                // 使用 Contents API 获取 SHA（单次请求，快速）
                 const newSha = await this.getFileSha(options.owner, options.repo, options.path);
 
                 if (newSha) {
@@ -257,9 +254,12 @@ export class GitHubClient {
                     return this.uploadFile(newOptions, retryCount + 1);
                 }
 
-                // 如果仍然获取不到 SHA，可能是 Tree 更新延迟，跳过此次上传
-                console.warn(`[Git Sync] Cannot get SHA for ${options.path}, skipping upload. File may need manual sync.`);
-                return null;
+                // 如果获取不到 SHA，说明文件确实不存在（可能是并发操作）
+                // 作为新文件上传（不带 SHA）
+                console.warn(`[Git Sync] Cannot get SHA for ${options.path}, uploading as new file.`);
+                const newOptions = { ...options };
+                delete newOptions.sha;
+                return this.uploadFile(newOptions, retryCount + 1);
             }
 
             const errorText = await response.text();
@@ -398,43 +398,39 @@ export class GitHubClient {
         }
     }
 
-    // 获取单个文件的 SHA（通过 Tree API，避免 Contents API 的 URL 编码问题）
-    async getFileSha(owner: string, repo: string, path: string, retryCount = 0): Promise<string | null> {
-        if (!this.octokit) return null;
-
-        const maxRetries = 5;
+    // 获取单个文件的 SHA（使用 Contents API，单次请求，高效）
+    async getFileSha(owner: string, repo: string, path: string): Promise<string | null> {
+        if (!this.token) return null;
 
         try {
-            const defaultBranch = await this.getDefaultBranch(owner, repo);
-            const { data: branchData } = await this.octokit.repos.getBranch({
-                owner,
-                repo,
-                branch: defaultBranch
+            // 使用原生 fetch，正确处理 URL 编码
+            const url = this.buildContentsUrl(owner, repo, path);
+
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${this.token}`,
+                    'Accept': 'application/vnd.github+json',
+                    'X-GitHub-Api-Version': '2022-11-28'
+                }
             });
 
-            const { data: treeData } = await this.octokit.git.getTree({
-                owner,
-                repo,
-                tree_sha: branchData.commit.sha,
-                recursive: 'true'
-            });
-
-            const file = treeData.tree.find(item => item.path === path && item.type === 'blob');
-            const sha = file?.sha || null;
-
-            // 如果文件 SHA 为 null，可能 Tree 还没更新，等待后重试
-            if (!sha && retryCount < maxRetries) {
-                console.log(`SHA not found for ${path}, retrying (${retryCount + 1}/${maxRetries})...`);
-                // 使用更长的等待时间：1s, 2s, 3s, 4s, 5s
-                await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
-                return this.getFileSha(owner, repo, path, retryCount + 1);
+            if (response.ok) {
+                const data = await response.json();
+                // Contents API 返回的数据中包含 sha 字段
+                return data.sha;
             }
 
-            return sha;
-        } catch (error: any) {
-            if (error.status !== 404) {
-                console.error('[Git Sync] Failed to get file SHA:', path, error);
+            // 404 表示文件不存在
+            if (response.status === 404) {
+                return null;
             }
+
+            // 其他错误
+            console.error('[Git Sync] Failed to get file SHA:', path, response.status);
+            return null;
+        } catch (error) {
+            console.error('[Git Sync] Failed to get file SHA:', path, error);
             return null;
         }
     }
