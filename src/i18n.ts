@@ -56,6 +56,7 @@ const translations = {
         menuConflicts: '{count} 个冲突',
         menuLastSync: '上次同步：{time}',
         menuNeverSynced: '从未同步',
+        menuBusy: '正在{action}...',
 
         // 同步操作通知
         startingSync: '开始同步...',
@@ -188,6 +189,7 @@ const translations = {
         menuConflicts: '{count} conflicts',
         menuLastSync: 'Last sync: {time}',
         menuNeverSynced: 'Never synced',
+        menuBusy: '{action} in progress...',
 
         // Sync notifications
         startingSync: 'Starting sync...',

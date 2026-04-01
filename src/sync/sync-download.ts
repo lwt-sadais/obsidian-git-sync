@@ -187,6 +187,9 @@ export class SyncDownloader {
                 this.plugin.statusBar.updateProgress(processedFiles, totalFiles, 'pull');
             }
 
+            // 更新操作进度
+            this.plugin.operationManager.updateProgress(processedFiles, totalFiles, 'pull');
+
             // 跳过特殊文件
             if (this.shouldSkipRemoteFile(remoteFile.path)) {
                 result.skippedFiles++;

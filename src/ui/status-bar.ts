@@ -1,4 +1,4 @@
-import { Menu } from 'obsidian';
+import { Menu, Notice } from 'obsidian';
 import GitSyncPlugin from '../main';
 import { t } from '../i18n';
 import { ConflictResolutionModal } from './conflict-modal';
@@ -123,27 +123,39 @@ export class StatusBarManager {
     showMenu(evt: MouseEvent): void {
         const menu = new Menu();
 
-        // 日常同步（双向）
-        menu.addItem((item) => {
-            item.setTitle(t('menuSyncNow'))
-                .onClick(() => this.plugin.syncNow());
-        });
+        // 检查是否有操作正在进行
+        const currentOp = this.plugin.operationManager.getCurrentOperation();
+        const isBusy = currentOp.type !== 'idle';
 
-        menu.addSeparator();
+        if (isBusy) {
+            // 显示当前操作状态，禁用所有操作项
+            menu.addItem((item) => {
+                item.setTitle(t('menuBusy', { action: currentOp.displayName }))
+                    .setDisabled(true);
+            });
+        } else {
+            // 日常同步（双向）
+            menu.addItem((item) => {
+                item.setTitle(t('menuSyncNow'))
+                    .onClick(() => this.plugin.syncNow());
+            });
 
-        // 以远程为准
-        menu.addItem((item) => {
-            item.setTitle(t('menuPullFromRemote'))
-                .onClick(() => this.plugin.pullFromRemote());
-        });
+            menu.addSeparator();
 
-        // 以本地为准
-        menu.addItem((item) => {
-            item.setTitle(t('menuPushToRemote'))
-                .onClick(() => this.plugin.fullSync());
-        });
+            // 以远程为准
+            menu.addItem((item) => {
+                item.setTitle(t('menuPullFromRemote'))
+                    .onClick(() => this.plugin.pullFromRemote());
+            });
 
-        // 如果有冲突，显示冲突解决选项
+            // 以本地为准
+            menu.addItem((item) => {
+                item.setTitle(t('menuPushToRemote'))
+                    .onClick(() => this.plugin.fullSync());
+            });
+        }
+
+        // 如果有冲突，显示冲突解决选项（即使忙碌也可以解决冲突）
         if (this.conflictCount > 0) {
             menu.addSeparator();
             menu.addItem((item) => {

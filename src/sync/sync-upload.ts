@@ -72,6 +72,9 @@ export class SyncUploader {
                 this.plugin.statusBar.updateProgress(processedFiles, totalFiles, 'push');
             }
 
+            // 更新操作进度
+            this.plugin.operationManager.updateProgress(processedFiles, totalFiles, 'push');
+
             // 检查文件大小
             if (file.stat.size > sizeLimitBytes) {
                 result.skippedFiles++;

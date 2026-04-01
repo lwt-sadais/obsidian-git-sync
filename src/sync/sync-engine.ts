@@ -138,6 +138,9 @@ export class SyncEngine {
                 this.plugin.statusBar.updateProgress(processedRemoteFiles, totalRemoteFiles, 'pull');
             }
 
+            // 更新操作进度
+            this.plugin.operationManager.updateProgress(processedRemoteFiles, totalRemoteFiles, 'pull');
+
             // 跳过特殊文件
             if (this.shouldSkipRemoteFile(remoteFile.path)) {
                 result.skippedFiles++;
@@ -236,6 +239,9 @@ export class SyncEngine {
             if (this.plugin.statusBar) {
                 this.plugin.statusBar.updateProgress(processedLocalFiles, totalLocalFiles, 'push');
             }
+
+            // 更新操作进度
+            this.plugin.operationManager.updateProgress(processedLocalFiles, totalLocalFiles, 'push');
 
             // 跳过排除规则
             if (this.uploader.shouldExcludeFile(localFile.path)) {

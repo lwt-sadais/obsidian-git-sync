@@ -73,6 +73,9 @@ export class FileWatcher {
             return;
         }
 
+        // 获取当前操作状态
+        const currentOp = this.plugin.operationManager.getCurrentOperation();
+
         // 同步引擎正在下载文件时，加入延迟队列（避免丢失用户操作）
         if (this.plugin.syncEngine.isDownloading) {
             this.addDeferredOperation({
@@ -84,8 +87,8 @@ export class FileWatcher {
             return;
         }
 
-        // 大同步正在运行时，加入延迟队列
-        if (this.plugin.isSyncing) {
+        // 有阻塞操作正在运行时，加入延迟队列
+        if (currentOp.isBlocking) {
             this.addDeferredOperation({
                 type: 'modify',
                 path: file.path,
@@ -118,8 +121,11 @@ export class FileWatcher {
         // 清除文件状态
         this.plugin.stateManager.clearFileState(file.path);
 
-        // 大同步正在运行时，加入延迟队列
-        if (this.plugin.isSyncing) {
+        // 获取当前操作状态
+        const currentOp = this.plugin.operationManager.getCurrentOperation();
+
+        // 有阻塞操作正在运行时，加入延迟队列
+        if (currentOp.isBlocking) {
             if (!isTempFile && !isExcluded) {
                 this.addDeferredOperation({
                     type: 'delete',
@@ -156,8 +162,11 @@ export class FileWatcher {
         const isOldExcluded = this.plugin.syncEngine.shouldExcludeFile(oldPath);
         const isNewExcluded = this.plugin.syncEngine.shouldExcludeFile(file.path);
 
-        // 大同步正在运行时，加入延迟队列
-        if (this.plugin.isSyncing) {
+        // 获取当前操作状态
+        const currentOp = this.plugin.operationManager.getCurrentOperation();
+
+        // 有阻塞操作正在运行时，加入延迟队列
+        if (currentOp.isBlocking) {
             if (!wasTempFile && !isOldExcluded) {
                 this.addDeferredOperation({
                     type: 'rename',
@@ -190,7 +199,8 @@ export class FileWatcher {
      * 同步待同步文件
      */
     async syncPendingFiles(): Promise<void> {
-        if (this.plugin.isSyncing) {
+        // 检查是否可以启动操作
+        if (!this.plugin.operationManager.canStart('upload_batch')) {
             return;
         }
 
@@ -210,7 +220,7 @@ export class FileWatcher {
             return;
         }
 
-        this.plugin.isSyncing = true;
+        this.plugin.operationManager.start('upload_batch');
         this.plugin.statusBar.startSyncing();
 
         const totalFiles = filesToSync.length;
@@ -224,6 +234,9 @@ export class FileWatcher {
 
                 // 更新状态栏进度
                 this.plugin.statusBar.updateProgress(processedFiles, totalFiles, 'push');
+
+                // 更新操作进度
+                this.plugin.operationManager.updateProgress(processedFiles, totalFiles, 'push');
 
                 const file = this.plugin.app.vault.getAbstractFileByPath(filePath);
                 if (file instanceof TFile) {
@@ -239,7 +252,7 @@ export class FileWatcher {
                 }
             }
         } finally {
-            this.plugin.isSyncing = false;
+            this.plugin.operationManager.end();
         }
 
         this.plugin.statusBar.endSync(errorCount === 0);

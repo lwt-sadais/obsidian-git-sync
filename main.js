@@ -4429,6 +4429,7 @@ var translations = {
     menuConflicts: "{count} \u4E2A\u51B2\u7A81",
     menuLastSync: "\u4E0A\u6B21\u540C\u6B65\uFF1A{time}",
     menuNeverSynced: "\u4ECE\u672A\u540C\u6B65",
+    menuBusy: "\u6B63\u5728{action}...",
     // 同步操作通知
     startingSync: "\u5F00\u59CB\u540C\u6B65...",
     syncingFiles: "\u540C\u6B65\u4E2D... {current}/{total} \u4E2A\u6587\u4EF6",
@@ -4548,6 +4549,7 @@ var translations = {
     menuConflicts: "{count} conflicts",
     menuLastSync: "Last sync: {time}",
     menuNeverSynced: "Never synced",
+    menuBusy: "{action} in progress...",
     // Sync notifications
     startingSync: "Starting sync...",
     syncingFiles: "Syncing... {current}/{total} files",
@@ -4911,6 +4913,7 @@ var SyncUploader = class {
       if (this.plugin.statusBar) {
         this.plugin.statusBar.updateProgress(processedFiles, totalFiles, "push");
       }
+      this.plugin.operationManager.updateProgress(processedFiles, totalFiles, "push");
       if (file.stat.size > sizeLimitBytes) {
         result.skippedFiles++;
         result.errors.push(`File too large: ${file.path} (${Math.round(file.stat.size / 1024 / 1024)}MB)`);
@@ -5211,6 +5214,7 @@ var SyncDownloader = class {
       if (this.plugin.statusBar) {
         this.plugin.statusBar.updateProgress(processedFiles, totalFiles, "pull");
       }
+      this.plugin.operationManager.updateProgress(processedFiles, totalFiles, "pull");
       if (this.shouldSkipRemoteFile(remoteFile.path)) {
         result.skippedFiles++;
         continue;
@@ -5400,6 +5404,7 @@ var SyncEngine = class {
       if (this.plugin.statusBar) {
         this.plugin.statusBar.updateProgress(processedRemoteFiles, totalRemoteFiles, "pull");
       }
+      this.plugin.operationManager.updateProgress(processedRemoteFiles, totalRemoteFiles, "pull");
       if (this.shouldSkipRemoteFile(remoteFile.path)) {
         result.skippedFiles++;
         continue;
@@ -5474,6 +5479,7 @@ var SyncEngine = class {
       if (this.plugin.statusBar) {
         this.plugin.statusBar.updateProgress(processedLocalFiles, totalLocalFiles, "push");
       }
+      this.plugin.operationManager.updateProgress(processedLocalFiles, totalLocalFiles, "push");
       if (this.uploader.shouldExcludeFile(localFile.path)) {
         continue;
       }
@@ -5728,6 +5734,7 @@ var FileWatcher = class {
     if (!this.shouldSyncFile(file)) {
       return;
     }
+    const currentOp = this.plugin.operationManager.getCurrentOperation();
     if (this.plugin.syncEngine.isDownloading) {
       this.addDeferredOperation({
         type: "modify",
@@ -5737,7 +5744,7 @@ var FileWatcher = class {
       });
       return;
     }
-    if (this.plugin.isSyncing) {
+    if (currentOp.isBlocking) {
       this.addDeferredOperation({
         type: "modify",
         path: file.path,
@@ -5761,7 +5768,8 @@ var FileWatcher = class {
     const isTempFile = isTempFileName(file.basename);
     const isExcluded = this.plugin.syncEngine.shouldExcludeFile(file.path);
     this.plugin.stateManager.clearFileState(file.path);
-    if (this.plugin.isSyncing) {
+    const currentOp = this.plugin.operationManager.getCurrentOperation();
+    if (currentOp.isBlocking) {
       if (!isTempFile && !isExcluded) {
         this.addDeferredOperation({
           type: "delete",
@@ -5789,7 +5797,8 @@ var FileWatcher = class {
     const isTempFile = isTempFileName(file.basename);
     const isOldExcluded = this.plugin.syncEngine.shouldExcludeFile(oldPath);
     const isNewExcluded = this.plugin.syncEngine.shouldExcludeFile(file.path);
-    if (this.plugin.isSyncing) {
+    const currentOp = this.plugin.operationManager.getCurrentOperation();
+    if (currentOp.isBlocking) {
       if (!wasTempFile && !isOldExcluded) {
         this.addDeferredOperation({
           type: "rename",
@@ -5815,7 +5824,7 @@ var FileWatcher = class {
    * 同步待同步文件
    */
   async syncPendingFiles() {
-    if (this.plugin.isSyncing) {
+    if (!this.plugin.operationManager.canStart("upload_batch")) {
       return;
     }
     if (!this.plugin.isAuthenticated || !this.plugin.settings.repoOwner || !this.plugin.settings.repoName) {
@@ -5830,7 +5839,7 @@ var FileWatcher = class {
     if (filesToSync.length === 0) {
       return;
     }
-    this.plugin.isSyncing = true;
+    this.plugin.operationManager.start("upload_batch");
     this.plugin.statusBar.startSyncing();
     const totalFiles = filesToSync.length;
     let processedFiles = 0;
@@ -5840,6 +5849,7 @@ var FileWatcher = class {
       for (const filePath of filesToSync) {
         processedFiles++;
         this.plugin.statusBar.updateProgress(processedFiles, totalFiles, "push");
+        this.plugin.operationManager.updateProgress(processedFiles, totalFiles, "push");
         const file = this.plugin.app.vault.getAbstractFileByPath(filePath);
         if (file instanceof import_obsidian6.TFile) {
           const fileState = this.plugin.stateManager.getFileState(filePath);
@@ -5854,7 +5864,7 @@ var FileWatcher = class {
         }
       }
     } finally {
-      this.plugin.isSyncing = false;
+      this.plugin.operationManager.end();
     }
     this.plugin.statusBar.endSync(errorCount === 0);
     if (successCount > 0) {
@@ -6527,16 +6537,24 @@ var StatusBarManager = class {
   // 显示点击菜单
   showMenu(evt) {
     const menu = new import_obsidian9.Menu();
-    menu.addItem((item) => {
-      item.setTitle(t("menuSyncNow")).onClick(() => this.plugin.syncNow());
-    });
-    menu.addSeparator();
-    menu.addItem((item) => {
-      item.setTitle(t("menuPullFromRemote")).onClick(() => this.plugin.pullFromRemote());
-    });
-    menu.addItem((item) => {
-      item.setTitle(t("menuPushToRemote")).onClick(() => this.plugin.fullSync());
-    });
+    const currentOp = this.plugin.operationManager.getCurrentOperation();
+    const isBusy = currentOp.type !== "idle";
+    if (isBusy) {
+      menu.addItem((item) => {
+        item.setTitle(t("menuBusy", { action: currentOp.displayName })).setDisabled(true);
+      });
+    } else {
+      menu.addItem((item) => {
+        item.setTitle(t("menuSyncNow")).onClick(() => this.plugin.syncNow());
+      });
+      menu.addSeparator();
+      menu.addItem((item) => {
+        item.setTitle(t("menuPullFromRemote")).onClick(() => this.plugin.pullFromRemote());
+      });
+      menu.addItem((item) => {
+        item.setTitle(t("menuPushToRemote")).onClick(() => this.plugin.fullSync());
+      });
+    }
     if (this.conflictCount > 0) {
       menu.addSeparator();
       menu.addItem((item) => {
@@ -6605,6 +6623,123 @@ var StatusBarManager = class {
   updateProgress(current, total, phase) {
     const phaseText = phase === "pull" ? "\u2193" : phase === "push" ? "\u2191" : "";
     this.setStatus("syncing", `${phaseText}${current}/${total}`);
+  }
+};
+
+// src/sync/operation-manager.ts
+var OperationManager = class {
+  constructor() {
+    this.currentOperation = { type: "idle", startTime: 0 };
+  }
+  /**
+   * 获取当前操作类型
+   */
+  getCurrentType() {
+    return this.currentOperation.type;
+  }
+  /**
+   * 获取当前操作信息（用于显示）
+   */
+  getCurrentOperation() {
+    const type = this.currentOperation.type;
+    if (type === "idle") {
+      return {
+        type: "idle",
+        displayName: "",
+        isBlocking: false
+      };
+    }
+    return {
+      type,
+      displayName: this.getDisplayName(type),
+      isBlocking: this.isBlockingOperation(type),
+      progress: this.currentOperation.progress
+    };
+  }
+  /**
+   * 检查是否有操作正在进行
+   */
+  isBusy() {
+    return this.currentOperation.type !== "idle";
+  }
+  /**
+   * 检查是否是阻塞型操作（禁止用户触发其他操作）
+   */
+  isBlocking() {
+    return this.isBlockingOperation(this.currentOperation.type);
+  }
+  /**
+   * 判断操作类型是否阻塞用户操作
+   *
+   * 阻塞型操作：bidirectional, pull, push
+   * 非阻塞型操作：upload_batch, delete_batch, download_single（内部使用）
+   */
+  isBlockingOperation(type) {
+    return type === "bidirectional" || type === "pull" || type === "push";
+  }
+  /**
+   * 获取操作的显示名称
+   */
+  getDisplayName(type) {
+    switch (type) {
+      case "bidirectional":
+        return t("menuSyncNow");
+      case "pull":
+        return t("menuPullFromRemote");
+      case "push":
+        return t("menuPushToRemote");
+      case "upload_batch":
+        return t("statusSyncing");
+      case "delete_batch":
+        return t("statusSyncing");
+      case "download_single":
+        return t("statusSyncing");
+      default:
+        return "";
+    }
+  }
+  /**
+   * 启动操作
+   */
+  start(type) {
+    this.currentOperation = {
+      type,
+      startTime: Date.now()
+    };
+  }
+  /**
+   * 更新进度
+   */
+  updateProgress(current, total, phase) {
+    if (this.currentOperation.type === "idle") {
+      return;
+    }
+    this.currentOperation.progress = {
+      current,
+      total,
+      phase
+    };
+  }
+  /**
+   * 结束操作
+   */
+  end() {
+    this.currentOperation = { type: "idle", startTime: 0 };
+  }
+  /**
+   * 检查是否可以启动新操作
+   *
+   * @param type 要启动的操作类型
+   * @returns 是否可以启动
+   */
+  canStart(type) {
+    if (this.currentOperation.type === "idle") {
+      return true;
+    }
+    if (type === "download_single" && !this.isBlocking()) {
+      return true;
+    }
+    return false;
   }
 };
 
@@ -6791,7 +6926,6 @@ var GitSyncPlugin = class extends import_obsidian11.Plugin {
   constructor() {
     super(...arguments);
     this.isAuthenticated = false;
-    this.isSyncing = false;
   }
   async onload() {
     await this.loadSettings();
@@ -6800,6 +6934,7 @@ var GitSyncPlugin = class extends import_obsidian11.Plugin {
     this.syncEngine = new SyncEngine(this);
     this.stateManager = new StateManager(this);
     this.fileWatcher = new FileWatcher(this);
+    this.operationManager = new OperationManager();
     await this.stateManager.loadState();
     this.authManager.setOnAuthChange((status) => {
       this.isAuthenticated = status.isAuthenticated;
@@ -6936,12 +7071,15 @@ var GitSyncPlugin = class extends import_obsidian11.Plugin {
   async fullSync() {
     const client = this.ensureSyncReady();
     if (!client) return;
+    if (!this.operationManager.canStart("push")) {
+      return;
+    }
     this.syncEngine.setClient(client);
-    this.isSyncing = true;
+    this.operationManager.start("push");
     try {
       await this.syncEngine.fullSync();
     } finally {
-      this.isSyncing = false;
+      this.operationManager.end();
       await this.fileWatcher.processDeferredOperations();
     }
   }
@@ -6951,12 +7089,15 @@ var GitSyncPlugin = class extends import_obsidian11.Plugin {
   async pullFromRemote() {
     const client = this.ensureSyncReady();
     if (!client) return;
+    if (!this.operationManager.canStart("pull")) {
+      return;
+    }
     this.syncEngine.setClient(client);
-    this.isSyncing = true;
+    this.operationManager.start("pull");
     try {
       await this.syncEngine.pullFromRemote();
     } finally {
-      this.isSyncing = false;
+      this.operationManager.end();
       await this.fileWatcher.processDeferredOperations();
     }
   }
@@ -6966,12 +7107,15 @@ var GitSyncPlugin = class extends import_obsidian11.Plugin {
   async bidirectionalSync() {
     const client = this.ensureSyncReady();
     if (!client) return;
+    if (!this.operationManager.canStart("bidirectional")) {
+      return;
+    }
     this.syncEngine.setClient(client);
-    this.isSyncing = true;
+    this.operationManager.start("bidirectional");
     try {
       await this.syncEngine.bidirectionalSync();
     } finally {
-      this.isSyncing = false;
+      this.operationManager.end();
       await this.fileWatcher.processDeferredOperations();
     }
   }

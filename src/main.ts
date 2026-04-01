@@ -12,6 +12,7 @@ import { SyncEngine } from './sync/sync-engine';
 import { StateManager } from './sync/state-manager';
 import { FileWatcher } from './sync/file-watcher';
 import { StatusBarManager } from './ui/status-bar';
+import { OperationManager } from './sync/operation-manager';
 import { GitSyncSettingTab } from './settings';
 import { GitSyncSettings, DEFAULT_SETTINGS } from './settings';
 import { STARTUP_SYNC_DELAY_MS } from './constants';
@@ -29,8 +30,8 @@ export default class GitSyncPlugin extends Plugin {
     stateManager: StateManager;
     statusBar: StatusBarManager;
     fileWatcher: FileWatcher;
+    operationManager: OperationManager;
     isAuthenticated: boolean = false;
-    isSyncing: boolean = false;
 
     async onload(): Promise<void> {
         await this.loadSettings();
@@ -41,6 +42,7 @@ export default class GitSyncPlugin extends Plugin {
         this.syncEngine = new SyncEngine(this);
         this.stateManager = new StateManager(this);
         this.fileWatcher = new FileWatcher(this);
+        this.operationManager = new OperationManager();
 
         await this.stateManager.loadState();
 
@@ -215,12 +217,17 @@ export default class GitSyncPlugin extends Plugin {
         const client = this.ensureSyncReady();
         if (!client) return;
 
+        // 检查是否可以启动操作
+        if (!this.operationManager.canStart('push')) {
+            return;
+        }
+
         this.syncEngine.setClient(client);
-        this.isSyncing = true;
+        this.operationManager.start('push');
         try {
             await this.syncEngine.fullSync();
         } finally {
-            this.isSyncing = false;
+            this.operationManager.end();
             await this.fileWatcher.processDeferredOperations();
         }
     }
@@ -232,12 +239,17 @@ export default class GitSyncPlugin extends Plugin {
         const client = this.ensureSyncReady();
         if (!client) return;
 
+        // 检查是否可以启动操作
+        if (!this.operationManager.canStart('pull')) {
+            return;
+        }
+
         this.syncEngine.setClient(client);
-        this.isSyncing = true;
+        this.operationManager.start('pull');
         try {
             await this.syncEngine.pullFromRemote();
         } finally {
-            this.isSyncing = false;
+            this.operationManager.end();
             await this.fileWatcher.processDeferredOperations();
         }
     }
@@ -249,12 +261,17 @@ export default class GitSyncPlugin extends Plugin {
         const client = this.ensureSyncReady();
         if (!client) return;
 
+        // 检查是否可以启动操作
+        if (!this.operationManager.canStart('bidirectional')) {
+            return;
+        }
+
         this.syncEngine.setClient(client);
-        this.isSyncing = true;
+        this.operationManager.start('bidirectional');
         try {
             await this.syncEngine.bidirectionalSync();
         } finally {
-            this.isSyncing = false;
+            this.operationManager.end();
             await this.fileWatcher.processDeferredOperations();
         }
     }
