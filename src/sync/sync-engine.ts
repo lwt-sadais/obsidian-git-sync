@@ -9,6 +9,7 @@ import { SyncUploader } from './sync-upload';
 import { SyncDownloader } from './sync-download';
 import { SyncResult, createSyncResult, createErrorResult, getAllVaultFiles, isTempFileName } from './sync-utils';
 import { t } from '../i18n';
+import { logger } from '../utils/logger';
 
 /**
  * 同步引擎
@@ -111,7 +112,7 @@ export class SyncEngine {
             this.finishBidirectionalSync(result);
             return result;
         } catch (error) {
-            console.error('Bidirectional sync failed:', error);
+            logger.error('Bidirectional sync failed:', error);
             if (this.plugin.statusBar) {
                 this.plugin.statusBar.endSync(false);
             }
@@ -202,7 +203,7 @@ export class SyncEngine {
                         try {
                             await this.plugin.app.vault.delete(localFile);
                             result.deletedFiles++;
-                            console.log('Deleted local file (remote deleted):', localFile.path);
+                            logger.debug('Deleted local file (remote deleted):', localFile.path);
                         } catch (error) {
                             result.errorFiles++;
                             result.errors.push(`Failed to delete local: ${localFile.path}`);
@@ -325,12 +326,12 @@ export class SyncEngine {
             });
 
             if (success) {
-                console.log('Remote file deleted:', path);
+                logger.debug('Remote file deleted:', path);
             }
 
             return success;
         } catch (error) {
-            console.error('Failed to delete remote file:', path, error);
+            logger.error('Failed to delete remote file:', path, error);
             return false;
         }
     }

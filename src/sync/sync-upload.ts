@@ -9,6 +9,7 @@ import { SyncResult, createSyncResult, createErrorResult, getAllVaultFiles, isTe
 import { arrayBufferToBase64 } from '../utils/encoding';
 import { BATCH_PAUSE_THRESHOLD, BATCH_PAUSE_MS, MB_TO_BYTES } from '../constants';
 import { t } from '../i18n';
+import { logger } from '../utils/logger';
 
 /**
  * 同步上传处理器
@@ -157,7 +158,7 @@ export class SyncUploader {
 
             return false;
         } catch (error) {
-            console.error('Failed to upload file:', file.path, error);
+            logger.error('Failed to upload file:', file.path, error);
             return false;
         }
     }
@@ -173,7 +174,7 @@ export class SyncUploader {
                 remoteFileMap.set(file.path, { sha: file.sha });
             }
         } catch (error) {
-            console.warn('Failed to get remote files, will upload without SHA check:', error);
+            logger.warn('Failed to get remote files, will upload without SHA check:', error);
         }
         return remoteFileMap;
     }

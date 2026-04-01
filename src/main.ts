@@ -16,6 +16,7 @@ import { GitSyncSettingTab } from './settings';
 import { GitSyncSettings, DEFAULT_SETTINGS } from './settings';
 import { STARTUP_SYNC_DELAY_MS } from './constants';
 import { t } from './i18n';
+import { logger } from './utils/logger';
 
 /**
  * Git Sync 插件
@@ -71,12 +72,12 @@ export default class GitSyncPlugin extends Plugin {
         // 启动时同步
         this.maybeSyncOnStartup();
 
-        console.log('Git Sync plugin loaded');
+        logger.info('Plugin loaded');
     }
 
     onunload(): void {
         this.fileWatcher.cleanup();
-        console.log('Git Sync plugin unloaded');
+        logger.info('Plugin unloaded');
     }
 
     async loadSettings(): Promise<void> {
@@ -103,7 +104,7 @@ export default class GitSyncPlugin extends Plugin {
             const success = await this.authManager.authenticateWithToken(token);
             if (success) {
                 this.isAuthenticated = true;
-                console.log('Auto-authenticated with saved token');
+                logger.info('Auto-authenticated with saved token');
             }
         }
     }

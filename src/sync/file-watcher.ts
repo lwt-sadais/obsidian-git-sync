@@ -7,6 +7,7 @@ import GitSyncPlugin from '../main';
 import { isTempFileName, getFileNameFromPath } from './sync-utils';
 import { FILE_CHANGE_DEBOUNCE_MS } from '../constants';
 import { t } from '../i18n';
+import { logger } from '../utils/logger';
 
 /**
  * 延迟操作类型
@@ -231,7 +232,7 @@ export class FileWatcher {
             return;
         }
 
-        console.log('[Git Sync] Processing deferred operations:', this.deferredOperations.length);
+        logger.debug('Processing deferred operations:', this.deferredOperations.length);
 
         const operations = [...this.deferredOperations];
         this.deferredOperations = [];
@@ -242,11 +243,11 @@ export class FileWatcher {
             try {
                 await this.executeDeferredOperation(op);
             } catch (error) {
-                console.error('[Git Sync] Failed to process deferred operation:', op, error);
+                logger.error('Failed to process deferred operation:', op, error);
             }
         }
 
-        console.log('[Git Sync] Deferred operations processed');
+        logger.debug('Deferred operations processed');
     }
 
     /**
@@ -293,7 +294,7 @@ export class FileWatcher {
         } else {
             this.deferredOperations.push(operation);
         }
-        console.log('[Git Sync] Deferred operation added:', operation.type, operation.path);
+        logger.debug('Deferred operation added:', operation.type, operation.path);
     }
 
     /**
@@ -312,7 +313,7 @@ export class FileWatcher {
                 const fileState = this.plugin.stateManager.getFileState(op.path);
                 const localModified = new Date(file.stat.mtime);
                 if (fileState && localModified <= new Date(fileState.localModified)) {
-                    console.log('[Git Sync] Skipping deferred modify, already synced:', op.path);
+                    logger.debug('Skipping deferred modify, already synced:', op.path);
                     break;
                 }
 

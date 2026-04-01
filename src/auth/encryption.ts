@@ -1,6 +1,8 @@
 // 简单的 Token 加密存储
 // 注意：这不是真正的加密，只是混淆存储，安全性依赖于用户的环境
 
+import { logger } from '../utils/logger';
+
 const ENCRYPTION_KEY = 'obsidian-git-sync-key';
 
 // 编码为 Base64（浏览器兼容）
@@ -36,7 +38,7 @@ export function decryptToken(encryptedToken: string): string {
         const decoded = base64Decode(encryptedToken);
         return xorEncrypt(decoded, ENCRYPTION_KEY);
     } catch (error) {
-        console.error('Failed to decrypt token:', error);
+        logger.error('Failed to decrypt token:', error);
         return '';
     }
 }

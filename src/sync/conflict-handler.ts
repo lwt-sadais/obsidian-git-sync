@@ -2,6 +2,7 @@ import { TFile, Vault, Notice } from 'obsidian';
 import GitSyncPlugin from '../main';
 import { BINARY_EXTENSIONS } from '../constants';
 import { t } from '../i18n';
+import { logger } from '../utils/logger';
 
 // 冲突解决策略
 export type ConflictResolution = 'keep-local' | 'use-remote' | 'keep-both' | 'smart-merge';
@@ -61,7 +62,7 @@ export class ConflictHandler {
         try {
             return await this.vault.read(file);
         } catch (error) {
-            console.error('Failed to read file:', file.path, error);
+            logger.error('Failed to read file:', file.path, error);
             return '';
         }
     }
@@ -278,7 +279,7 @@ export class ConflictHandler {
 
             return true;
         } catch (error) {
-            console.error('Failed to resolve conflict:', path, error);
+            logger.error('Failed to resolve conflict:', path, error);
             new Notice(t('conflictResolveFailed', { path }));
             return false;
         }

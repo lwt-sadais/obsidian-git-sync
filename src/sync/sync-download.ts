@@ -10,6 +10,7 @@ import { SyncResult, createSyncResult, createErrorResult, getAllVaultFiles, isTe
 import { base64ToArrayBuffer } from '../utils/encoding';
 import { BATCH_PAUSE_THRESHOLD, BATCH_PAUSE_MS, REMOTE_SKIP_FILES, REMOTE_SKIP_PREFIXES } from '../constants';
 import { t } from '../i18n';
+import { logger } from '../utils/logger';
 
 /**
  * 同步下载处理器
@@ -68,7 +69,7 @@ export class SyncDownloader {
             this.finishPull(result);
             return result;
         } catch (error) {
-            console.error('Pull failed:', error);
+            logger.error('Pull failed:', error);
             if (this.plugin.statusBar) {
                 this.plugin.statusBar.endSync(false);
             }
@@ -81,13 +82,13 @@ export class SyncDownloader {
      */
     async downloadFile(path: string, forceOverwrite: boolean = false, blobSha?: string): Promise<boolean> {
         if (!this.client) {
-            console.error('Not authenticated');
+            logger.error('Not authenticated');
             return false;
         }
 
         const { repoOwner, repoName } = this.plugin.settings;
         if (!repoOwner || !repoName) {
-            console.error('Repository not configured');
+            logger.error('Repository not configured');
             return false;
         }
 
@@ -100,7 +101,7 @@ export class SyncDownloader {
             }, blobSha);
 
             if (!remoteFile || !remoteFile.content) {
-                console.log('Remote file not found:', path);
+                logger.debug('Remote file not found:', path);
                 return false;
             }
 
@@ -160,7 +161,7 @@ export class SyncDownloader {
 
             return true;
         } catch (error) {
-            console.error('Failed to download file:', path, error);
+            logger.error('Failed to download file:', path, error);
             new Notice(t('downloadFailed', { path }));
             return false;
         }
@@ -241,7 +242,7 @@ export class SyncDownloader {
                     try {
                         await this.plugin.app.vault.delete(localFile);
                         result.deletedFiles++;
-                        console.log('Deleted local file (remote deleted):', localFile.path);
+                        logger.debug('Deleted local file (remote deleted):', localFile.path);
                     } catch (error) {
                         result.errorFiles++;
                         result.errors.push(`Failed to delete local: ${localFile.path}`);

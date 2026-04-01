@@ -1,5 +1,6 @@
 import { App } from 'obsidian';
 import GitSyncPlugin from '../main';
+import { logger } from '../utils/logger';
 
 // 同步状态存储
 export interface SyncStateData {
@@ -38,7 +39,7 @@ export class StateManager {
                 this.state = data.syncState;
             }
         } catch (error) {
-            console.error('Failed to load sync state:', error);
+            logger.error('Failed to load sync state:', error);
         }
     }
 
@@ -49,7 +50,7 @@ export class StateManager {
             data.syncState = this.state;
             await this.plugin.saveData(data);
         } catch (error) {
-            console.error('Failed to save sync state:', error);
+            logger.error('Failed to save sync state:', error);
         }
     }
 

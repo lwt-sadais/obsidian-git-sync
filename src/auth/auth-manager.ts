@@ -1,6 +1,7 @@
 import { Notice } from 'obsidian';
 import { GitHubClient } from '../api/github';
 import { GitHubUser, AuthStatus } from '../api/types';
+import { logger } from '../utils/logger';
 
 export class AuthManager {
     private client: GitHubClient;
@@ -23,7 +24,7 @@ export class AuthManager {
         if (success) {
             this.user = await this.client.getCurrentUser();
             if (this.user) {
-                console.log('[Git Sync] Authenticated as:', this.user.login);
+                logger.info('Authenticated as:', this.user.login);
                 this.notifyAuthChange();
                 return true;
             }

@@ -21,6 +21,7 @@ import {
     RETRY_WAIT_BASE_MS,
     DELETE_RETRY_WAIT_MS
 } from '../constants';
+import { logger } from '../utils/logger';
 
 /**
  * GitHub API 客户端
@@ -50,7 +51,7 @@ export class GitHubClient {
         this.token = token;
         this.octokit = new Octokit({
             auth: token,
-            userAgent: 'obsidian-git-sync/0.2.5'
+            userAgent: 'obsidian-git-sync/0.3.0'
         });
 
         try {
@@ -80,7 +81,7 @@ export class GitHubClient {
                 email: data.email
             };
         } catch (error) {
-            console.error('Failed to get current user:', error);
+            logger.error('Failed to get current user:', error);
             return null;
         }
     }
@@ -110,7 +111,7 @@ export class GitHubClient {
                 description: data.description
             };
         } catch (error) {
-            console.error('Failed to create repository:', error);
+            logger.error('Failed to create repository:', error);
             return null;
         }
     }
@@ -139,7 +140,7 @@ export class GitHubClient {
                 description: repo.description
             }));
         } catch (error) {
-            console.error('Failed to list repositories:', error);
+            logger.error('Failed to list repositories:', error);
             return [];
         }
     }
@@ -190,8 +191,9 @@ export class GitHubClient {
                     encoding: data.encoding
                 };
             } catch (error: any) {
+                // 404 是预期行为，不记录错误
                 if (error.status !== 404) {
-                    console.error('[Git Sync] Failed to get file blob:', options.path, error);
+                    logger.error('Failed to get file blob:', options.path, error);
                 }
                 return null;
             }
@@ -238,7 +240,7 @@ export class GitHubClient {
 
             // 409 Conflict: SHA 不匹配
             if (response.status === 409 && retryCount < MAX_UPLOAD_RETRIES) {
-                console.log(`SHA conflict for ${options.path}, retrying (${retryCount + 1}/${MAX_UPLOAD_RETRIES})...`);
+                logger.debug(`SHA conflict for ${options.path}, retrying (${retryCount + 1}/${MAX_UPLOAD_RETRIES})...`);
                 const newSha = await this.getFileSha(options.owner, options.repo, options.path);
                 const newOptions = { ...options, sha: newSha || undefined };
                 return this.uploadFile(newOptions, retryCount + 1);
@@ -246,14 +248,14 @@ export class GitHubClient {
 
             // 403 Forbidden: GitHub 规则检查超时
             if (response.status === 403 && retryCount < MAX_UPLOAD_RETRIES) {
-                console.log(`GitHub rule check timeout for ${options.path}, retrying (${retryCount + 1}/${MAX_UPLOAD_RETRIES})...`);
+                logger.debug(`GitHub rule check timeout for ${options.path}, retrying (${retryCount + 1}/${MAX_UPLOAD_RETRIES})...`);
                 await new Promise(resolve => setTimeout(resolve, RETRY_WAIT_BASE_MS * (retryCount + 1)));
                 return this.uploadFile(options, retryCount + 1);
             }
 
             // 422 Unprocessable Content: 文件已存在但未提供 SHA
             if (response.status === 422 && retryCount < MAX_UPLOAD_RETRIES) {
-                console.log(`SHA missing for ${options.path}, retrying (${retryCount + 1}/${MAX_UPLOAD_RETRIES})...`);
+                logger.debug(`SHA missing for ${options.path}, retrying (${retryCount + 1}/${MAX_UPLOAD_RETRIES})...`);
                 const newSha = await this.getFileSha(options.owner, options.repo, options.path);
 
                 if (newSha) {
@@ -261,17 +263,17 @@ export class GitHubClient {
                     return this.uploadFile(newOptions, retryCount + 1);
                 }
 
-                console.warn(`[Git Sync] Cannot get SHA for ${options.path}, uploading as new file.`);
+                logger.warn(`Cannot get SHA for ${options.path}, uploading as new file.`);
                 const newOptions = { ...options };
                 delete newOptions.sha;
                 return this.uploadFile(newOptions, retryCount + 1);
             }
 
             const errorText = await response.text();
-            console.error('Failed to upload file:', response.status, errorText);
+            logger.error('Failed to upload file:', response.status, errorText);
             return null;
         } catch (error) {
-            console.error('Failed to upload file:', error);
+            logger.error('Failed to upload file:', error);
             return null;
         }
     }
@@ -307,7 +309,7 @@ export class GitHubClient {
 
             // 409 Conflict: SHA 不匹配
             if (response.status === 409 && retryCount < MAX_DELETE_RETRIES) {
-                console.log(`SHA conflict when deleting ${options.path}, retrying (${retryCount + 1}/${MAX_DELETE_RETRIES})...`);
+                logger.debug(`SHA conflict when deleting ${options.path}, retrying (${retryCount + 1}/${MAX_DELETE_RETRIES})...`);
                 await new Promise(resolve => setTimeout(resolve, DELETE_RETRY_WAIT_MS));
                 const newSha = await this.getFileSha(options.owner, options.repo, options.path);
 
@@ -319,10 +321,10 @@ export class GitHubClient {
                 return this.deleteFile(newOptions, retryCount + 1);
             }
 
-            console.error('Failed to delete file:', response.status, await response.text());
+            logger.error('Failed to delete file:', response.status, await response.text());
             return false;
         } catch (error) {
-            console.error('Failed to delete file:', error);
+            logger.error('Failed to delete file:', error);
             return false;
         }
     }
@@ -337,7 +339,7 @@ export class GitHubClient {
             const { data } = await this.octokit.repos.get({ owner, repo });
             return data.default_branch || DEFAULT_BRANCH;
         } catch (error) {
-            console.error('Failed to get default branch:', error);
+            logger.error('Failed to get default branch:', error);
             return DEFAULT_BRANCH;
         }
     }
@@ -350,14 +352,14 @@ export class GitHubClient {
 
         try {
             const defaultBranch = await this.getDefaultBranch(owner, repo);
-            console.log('[Git Sync] Default branch:', defaultBranch);
+            logger.debug('Default branch:', defaultBranch);
 
             const { data: branchData } = await this.octokit.repos.getBranch({
                 owner,
                 repo,
                 branch: defaultBranch
             });
-            console.log('[Git Sync] Branch commit SHA:', branchData.commit.sha);
+            logger.debug('Branch commit SHA:', branchData.commit.sha);
 
             const { data: treeData } = await this.octokit.git.getTree({
                 owner,
@@ -365,7 +367,7 @@ export class GitHubClient {
                 tree_sha: branchData.commit.sha,
                 recursive: 'true'
             });
-            console.log('[Git Sync] Tree data count:', treeData.tree.length);
+            logger.debug('Tree data count:', treeData.tree.length);
 
             const files: GitHubFile[] = treeData.tree
                 .filter(item => item.type === 'blob')
@@ -381,10 +383,10 @@ export class GitHubClient {
                     type: 'file' as const
                 }));
 
-            console.log('[Git Sync] Files count:', files.length);
+            logger.debug('Files count:', files.length);
             return files;
         } catch (error: any) {
-            console.error('[Git Sync] Failed to get all files:', error.message || error);
+            logger.error('Failed to get all files:', error.message || error);
             return [];
         }
     }
@@ -412,14 +414,15 @@ export class GitHubClient {
                 return data.sha;
             }
 
+            // 404 是预期行为，不记录错误
             if (response.status === 404) {
                 return null;
             }
 
-            console.error('[Git Sync] Failed to get file SHA:', path, response.status);
+            logger.error('Failed to get file SHA:', path, response.status);
             return null;
         } catch (error) {
-            console.error('[Git Sync] Failed to get file SHA:', path, error);
+            logger.error('Failed to get file SHA:', path, error);
             return null;
         }
     }

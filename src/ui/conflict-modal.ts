@@ -2,6 +2,7 @@ import { App, Modal, Setting, TFile, Notice, MarkdownRenderer, Component } from 
 import GitSyncPlugin from '../main';
 import { ConflictHandler, ConflictFile, ConflictResolution } from '../sync/conflict-handler';
 import { base64ToString } from '../utils/encoding';
+import { logger } from '../utils/logger';
 import { t } from '../i18n';
 
 // 冲突解决面板
@@ -111,7 +112,7 @@ export class ConflictResolutionModal extends Modal {
                 // 默认选择智能合并
                 this.selectedResolution.set(path, 'smart-merge');
             } catch (error) {
-                console.error('Failed to load conflict file:', path, error);
+                logger.error('Failed to load conflict file:', path, error);
             }
         }
     }
