@@ -21,6 +21,14 @@ interface DeferredOperation {
 }
 
 /**
+ * 删除队列项
+ */
+interface DeleteQueueItem {
+    path: string;
+    timestamp: number;
+}
+
+/**
  * 文件监听器
  */
 export class FileWatcher {
@@ -31,6 +39,12 @@ export class FileWatcher {
 
     /** 延迟操作队列 */
     deferredOperations: DeferredOperation[] = [];
+
+    /** 删除队列 */
+    deleteQueue: DeleteQueueItem[] = [];
+
+    /** 删除操作 debounce 定时器 */
+    deleteTimer: ReturnType<typeof setTimeout> | null = null;
 
     constructor(plugin: GitSyncPlugin) {
         this.plugin = plugin;
@@ -44,19 +58,29 @@ export class FileWatcher {
             clearTimeout(this.fileChangeTimer);
             this.fileChangeTimer = null;
         }
+        if (this.deleteTimer) {
+            clearTimeout(this.deleteTimer);
+            this.deleteTimer = null;
+        }
     }
 
     /**
      * 处理文件变更
      */
     handleFileChange(file: TFile): void {
-        // 同步引擎正在下载文件，跳过
-        if (this.plugin.syncEngine.isDownloading) {
+        // 检查是否应该同步
+        if (!this.shouldSyncFile(file)) {
             return;
         }
 
-        // 检查是否应该同步
-        if (!this.shouldSyncFile(file)) {
+        // 同步引擎正在下载文件时，加入延迟队列（避免丢失用户操作）
+        if (this.plugin.syncEngine.isDownloading) {
+            this.addDeferredOperation({
+                type: 'modify',
+                path: file.path,
+                file: file,
+                timestamp: Date.now()
+            });
             return;
         }
 
@@ -91,6 +115,9 @@ export class FileWatcher {
         const isTempFile = isTempFileName(file.basename);
         const isExcluded = this.plugin.syncEngine.shouldExcludeFile(file.path);
 
+        // 清除文件状态
+        this.plugin.stateManager.clearFileState(file.path);
+
         // 大同步正在运行时，加入延迟队列
         if (this.plugin.isSyncing) {
             if (!isTempFile && !isExcluded) {
@@ -100,16 +127,12 @@ export class FileWatcher {
                     timestamp: Date.now()
                 });
             }
-            this.plugin.stateManager.clearFileState(file.path);
             return;
         }
 
-        // 清除文件状态
-        this.plugin.stateManager.clearFileState(file.path);
-
-        // 如果不是临时文件且不在排除规则中，删除远程文件
+        // 如果不是临时文件且不在排除规则中，加入删除队列
         if (!isTempFile && !isExcluded) {
-            this.deleteRemoteFile(file.path);
+            this.addToDeleteQueue(file.path);
         }
 
         // 更新状态栏
@@ -190,11 +213,18 @@ export class FileWatcher {
         this.plugin.isSyncing = true;
         this.plugin.statusBar.startSyncing();
 
+        const totalFiles = filesToSync.length;
+        let processedFiles = 0;
         let successCount = 0;
         let errorCount = 0;
 
         try {
             for (const filePath of filesToSync) {
+                processedFiles++;
+
+                // 更新状态栏进度
+                this.plugin.statusBar.updateProgress(processedFiles, totalFiles, 'push');
+
                 const file = this.plugin.app.vault.getAbstractFileByPath(filePath);
                 if (file instanceof TFile) {
                     const fileState = this.plugin.stateManager.getFileState(filePath);
@@ -256,7 +286,6 @@ export class FileWatcher {
     private shouldSyncFile(file: TFile): boolean {
         return this.plugin.settings.autoSync &&
                this.plugin.isAuthenticated &&
-               !this.plugin.syncEngine.isDownloading &&
                !this.plugin.syncEngine.shouldExcludeFile(file.path) &&
                this.plugin.syncEngine.isFileSizeOk(file.stat.size) &&
                !isTempFileName(file.basename);
@@ -333,6 +362,83 @@ export class FileWatcher {
                 break;
             }
         }
+    }
+
+    /**
+     * 添加到删除队列
+     */
+    private addToDeleteQueue(path: string): void {
+        // 避免重复添加
+        if (this.deleteQueue.some(item => item.path === path)) {
+            return;
+        }
+
+        this.deleteQueue.push({ path, timestamp: Date.now() });
+
+        // 更新状态栏显示待删除数量
+        const deleteCount = this.deleteQueue.length;
+        this.plugin.statusBar.setStatus('pending', `${deleteCount} ${t('statusPending').toLowerCase()}`);
+
+        // 设置定时器，批量处理删除队列
+        if (this.deleteTimer) {
+            clearTimeout(this.deleteTimer);
+        }
+
+        this.deleteTimer = setTimeout(() => {
+            this.processDeleteQueue();
+        }, FILE_CHANGE_DEBOUNCE_MS);
+    }
+
+    /**
+     * 处理删除队列
+     */
+    private async processDeleteQueue(): Promise<void> {
+        if (this.deleteQueue.length === 0) {
+            return;
+        }
+
+        if (!this.plugin.isAuthenticated || !this.plugin.settings.repoOwner || !this.plugin.settings.repoName) {
+            this.deleteQueue = [];
+            return;
+        }
+
+        const client = this.plugin.authManager.getClient();
+        if (!client) {
+            this.deleteQueue = [];
+            return;
+        }
+
+        this.plugin.syncEngine.setClient(client);
+
+        const filesToDelete = [...this.deleteQueue];
+        this.deleteQueue = [];
+
+        this.plugin.statusBar.startSyncing();
+
+        const totalFiles = filesToDelete.length;
+        let processedFiles = 0;
+        let successCount = 0;
+
+        for (const item of filesToDelete) {
+            processedFiles++;
+
+            // 更新状态栏进度
+            this.plugin.statusBar.updateProgress(processedFiles, totalFiles, 'pull');
+
+            const success = await this.plugin.syncEngine.deleteRemoteFile(item.path);
+            if (success) {
+                successCount++;
+            }
+        }
+
+        this.plugin.statusBar.endSync(successCount === totalFiles);
+
+        if (successCount > 0) {
+            new Notice(t('deletedFromRemote', { path: `${successCount} files` }));
+        }
+
+        // 处理延迟操作
+        await this.processDeferredOperations();
     }
 
     /**

@@ -24,9 +24,7 @@ export class StatusBarManager {
     // 设置状态
     setStatus(status: SyncStatus, text?: string): void {
         this.currentStatus = status;
-        if (text) {
-            this.statusText = text;
-        }
+        this.statusText = text || '';
         this.render();
     }
 

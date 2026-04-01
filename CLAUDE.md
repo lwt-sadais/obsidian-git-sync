@@ -9,6 +9,7 @@
 - Obsidian 插件开发文档：`.claude/Obsidian插件开发文档.md`
 - TypeScript 编码规范：`.claude/typescript-编码规范.md`
 - 设计文档：`docs/plans/2026-03-30-github-sync-design.md`
+- 业务流程文档：`docs/workflows.md`
 - 开发规则：`docs/rules.md`
 
 ## 当前项目
