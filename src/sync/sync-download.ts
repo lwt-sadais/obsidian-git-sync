@@ -18,8 +18,6 @@ import { logger } from '../utils/logger';
 export class SyncDownloader {
     plugin: GitSyncPlugin;
     client: GitHubClient | null = null;
-    isDownloading: boolean = false;
-    isDeletingLocalFiles: boolean = false;
 
     constructor(plugin: GitSyncPlugin) {
         this.plugin = plugin;
@@ -132,15 +130,15 @@ export class SyncDownloader {
                 }
 
                 // 更新本地文件
-                this.isDownloading = true;
+                this.plugin.operationManager.suppressModifyEvents();
                 try {
                     await this.plugin.app.vault.modifyBinary(localFile, content);
                 } finally {
-                    this.isDownloading = false;
+                    this.plugin.operationManager.clearSuppress();
                 }
             } else {
                 // 本地文件不存在，创建新文件
-                this.isDownloading = true;
+                this.plugin.operationManager.suppressModifyEvents();
                 try {
                     const parentPath = path.substring(0, path.lastIndexOf('/'));
                     if (parentPath) {
@@ -148,7 +146,7 @@ export class SyncDownloader {
                     }
                     await this.plugin.app.vault.createBinary(path, content);
                 } finally {
-                    this.isDownloading = false;
+                    this.plugin.operationManager.clearSuppress();
                 }
             }
 
@@ -227,7 +225,7 @@ export class SyncDownloader {
     ): Promise<void> {
         const localFiles = getAllVaultFiles(this.plugin.app.vault);
 
-        this.isDeletingLocalFiles = true;
+        this.plugin.operationManager.suppressDeleteEvents();
         try {
             for (const localFile of localFiles) {
                 // 跳过排除规则
@@ -253,7 +251,7 @@ export class SyncDownloader {
                 }
             }
         } finally {
-            this.isDeletingLocalFiles = false;
+            this.plugin.operationManager.clearSuppress();
         }
     }
 

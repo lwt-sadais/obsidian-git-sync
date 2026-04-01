@@ -33,7 +33,7 @@
 │     - 文件大小不超限？                                            │
 │     - 不是临时文件名？                                            │
 │                                                                 │
-│  syncEngine.isDownloading（正在下载文件）？                        │
+│  operationManager.shouldSuppressModify（正在下载文件）？             │
 │  → YES: 加入 deferredOperations 队列                            │
 │         （Pull 结束后通过 processDeferredOperations 处理）        │
 │  → NO:  继续                                                     │
@@ -94,9 +94,10 @@
 **特殊场景：Pull 期间创建文件**
 
 ```
-Pull 正在下载 → isDownloading = true
+Pull 正在下载 → operationManager.suppressModifyEvents()
                用户创建文件 A
                → handleFileChange(A)
+               → shouldSuppressModify() = true
                → 加入 deferredOperations
 Pull 结束 → processDeferredOperations()
           → executeDeferredOperation('modify', A)
@@ -130,7 +131,7 @@ Pull 结束 → processDeferredOperations()
 │  file-watcher.ts: handleFileDelete()                            │
 │                                                                 │
 │  检查条件：                                                       │
-│  1. syncEngine.isDeletingLocalFiles? → 跳过（双向同步正在删除）     │
+│  1. operationManager.shouldSuppressDelete()? → 跳过（正在删除本地）  │
 │  2. autoSync 开启 + isAuthenticated?                            │
 │  3. isTempFile 或 isExcluded? → 只清除状态，不删除远程             │
 │                                                                 │
@@ -311,11 +312,13 @@ Pull 结束 → processDeferredOperations()
 │  2. 曾经同步过（fileState.status === 'synced'）                   │
 │     → 防止删除从未同步的本地新建文件                                │
 │                                                                 │
-│  isDeletingLocalFiles = true                                    │
+│  operationManager.suppressDeleteEvents()                         │
 │  → 阻止 fileWatcher.handleFileDelete 触发                        │
 │                                                                 │
 │  vault.delete(localFile)                                        │
 │  → 删除本地文件                                                    │
+│                                                                 │
+│  operationManager.clearSuppress()                                │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
                            ▼
@@ -433,12 +436,14 @@ Pull 结束 → processDeferredOperations()
 │  2. 不在排除规则                                                  │
 │  3. 不是临时文件                                                  │
 │                                                                 │
-│  isDeletingLocalFiles = true                                    │
+│  operationManager.suppressDeleteEvents()                         │
 │  → 阻止 fileWatcher 触发                                          │
 │                                                                 │
 │  vault.delete(localFile)                                        │
 │  → 强制删除本地文件                                                │
 │  → 不检查是否曾经同步过                                             │
+│                                                                 │
+│  operationManager.clearSuppress()                                │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
                            ▼
@@ -638,15 +643,37 @@ operationManager.getCurrentOperation()
 
 ### 与原有标志位的关系
 
+所有状态标志位已统一纳入 OperationManager 管理：
+
 | 原标志位 | 新方案 |
 |---------|--------|
-| `main.ts: isSyncing` | 已移除，使用 `operationManager.isBlocking()` |
-| `sync-download.ts: isDownloading` | 保留，用于阻止 handleFileChange |
-| `sync-download.ts: isDeletingLocalFiles` | 保留，用于阻止 handleFileDelete |
+| `main.ts: isSyncing` | `operationManager.isBlocking()` |
+| `sync-download.ts: isDownloading` | `operationManager.shouldSuppressModify()` |
+| `sync-download.ts: isDeletingLocalFiles` | `operationManager.shouldSuppressDelete()` |
 
-**注意**：`isDownloading` 和 `isDeletingLocalFiles` 仍保留，因为它们有特定用途：
-- `isDownloading`：下载文件时避免触发 handleFileChange（防止循环）
-- `isDeletingLocalFiles`：删除本地文件时避免触发 handleFileDelete（防止循环）
+### 事件抑制机制
+
+用于防止 vault 事件循环触发：
+
+```
+downloadFile() 调用 vault.modify/create
+    ↓
+触发 vault.on('modify'/'create')
+    ↓
+handleFileChange() 检查 shouldSuppressModify()
+    → YES: 加入 deferredOperations，不立即同步
+    → NO: 正常处理
+```
+
+```
+deleteLocalFiles() 调用 vault.delete
+    ↓
+触发 vault.on('delete')
+    ↓
+handleFileDelete() 检查 shouldSuppressDelete()
+    → YES: 直接返回，不触发远程删除
+    → NO: 正常处理
+```
 
 ---
 

@@ -17,6 +17,14 @@ export type OperationType =
     | 'download_single';  // 单文件下载（内部使用）
 
 /**
+ * 事件抑制类型（防止循环触发）
+ */
+export type SuppressEventType =
+    | 'none'     // 不抑制
+    | 'modify'   // 抑制 modify/create 事件
+    | 'delete';  // 抑制 delete 事件
+
+/**
  * 操作状态
  */
 export interface OperationState {
@@ -51,9 +59,13 @@ export interface OperationInfo {
  * 2. 是否忙碌判断
  * 3. 进度更新
  * 4. 操作启动/结束生命周期
+ * 5. 事件抑制（防止循环触发）
  */
 export class OperationManager {
     private currentOperation: OperationState = { type: 'idle', startTime: 0 };
+
+    /** 事件抑制类型（防止 vault 事件循环触发） */
+    private suppressEvent: SuppressEventType = 'none';
 
     /**
      * 获取当前操作类型
@@ -162,6 +174,7 @@ export class OperationManager {
      */
     end(): void {
         this.currentOperation = { type: 'idle', startTime: 0 };
+        this.suppressEvent = 'none';
     }
 
     /**
@@ -183,5 +196,44 @@ export class OperationManager {
 
         // 其他情况：正在阻塞操作中，不能启动新操作
         return false;
+    }
+
+    // ========== 事件抑制方法（防止循环触发） ==========
+
+    /**
+     * 抑制 modify/create 事件
+     * 用于下载文件时防止触发 handleFileChange
+     */
+    suppressModifyEvents(): void {
+        this.suppressEvent = 'modify';
+    }
+
+    /**
+     * 抑制 delete 事件
+     * 用于删除本地文件时防止触发 handleFileDelete
+     */
+    suppressDeleteEvents(): void {
+        this.suppressEvent = 'delete';
+    }
+
+    /**
+     * 清除事件抑制
+     */
+    clearSuppress(): void {
+        this.suppressEvent = 'none';
+    }
+
+    /**
+     * 检查是否应该抑制 modify/create 事件
+     */
+    shouldSuppressModify(): boolean {
+        return this.suppressEvent === 'modify';
+    }
+
+    /**
+     * 检查是否应该抑制 delete 事件
+     */
+    shouldSuppressDelete(): boolean {
+        return this.suppressEvent === 'delete';
     }
 }

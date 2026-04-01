@@ -73,11 +73,8 @@ export class FileWatcher {
             return;
         }
 
-        // 获取当前操作状态
-        const currentOp = this.plugin.operationManager.getCurrentOperation();
-
-        // 同步引擎正在下载文件时，加入延迟队列（避免丢失用户操作）
-        if (this.plugin.syncEngine.isDownloading) {
+        // 防止循环：下载期间抑制 modify/create 事件
+        if (this.plugin.operationManager.shouldSuppressModify()) {
             this.addDeferredOperation({
                 type: 'modify',
                 path: file.path,
@@ -86,6 +83,9 @@ export class FileWatcher {
             });
             return;
         }
+
+        // 获取当前操作状态
+        const currentOp = this.plugin.operationManager.getCurrentOperation();
 
         // 有阻塞操作正在运行时，加入延迟队列
         if (currentOp.isBlocking) {
@@ -106,8 +106,8 @@ export class FileWatcher {
      * 处理文件删除
      */
     handleFileDelete(file: TFile): void {
-        // 双向同步正在删除本地文件，跳过
-        if (this.plugin.syncEngine.isDeletingLocalFiles) {
+        // 防止循环：删除本地文件期间抑制 delete 事件
+        if (this.plugin.operationManager.shouldSuppressDelete()) {
             return;
         }
 

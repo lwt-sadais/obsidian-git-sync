@@ -5092,8 +5092,6 @@ var import_obsidian4 = require("obsidian");
 var SyncDownloader = class {
   constructor(plugin) {
     this.client = null;
-    this.isDownloading = false;
-    this.isDeletingLocalFiles = false;
     this.plugin = plugin;
   }
   /**
@@ -5173,14 +5171,14 @@ var SyncDownloader = class {
             return false;
           }
         }
-        this.isDownloading = true;
+        this.plugin.operationManager.suppressModifyEvents();
         try {
           await this.plugin.app.vault.modifyBinary(localFile, content);
         } finally {
-          this.isDownloading = false;
+          this.plugin.operationManager.clearSuppress();
         }
       } else {
-        this.isDownloading = true;
+        this.plugin.operationManager.suppressModifyEvents();
         try {
           const parentPath = path.substring(0, path.lastIndexOf("/"));
           if (parentPath) {
@@ -5188,7 +5186,7 @@ var SyncDownloader = class {
           }
           await this.plugin.app.vault.createBinary(path, content);
         } finally {
-          this.isDownloading = false;
+          this.plugin.operationManager.clearSuppress();
         }
       }
       await this.plugin.stateManager.updateFileSynced(
@@ -5240,7 +5238,7 @@ var SyncDownloader = class {
    */
   async deleteLocalFiles(remoteFilePaths, result) {
     const localFiles = getAllVaultFiles(this.plugin.app.vault);
-    this.isDeletingLocalFiles = true;
+    this.plugin.operationManager.suppressDeleteEvents();
     try {
       for (const localFile of localFiles) {
         if (this.shouldExcludeFile(localFile.path)) {
@@ -5261,7 +5259,7 @@ var SyncDownloader = class {
         }
       }
     } finally {
-      this.isDeletingLocalFiles = false;
+      this.plugin.operationManager.clearSuppress();
     }
   }
   /**
@@ -5329,18 +5327,6 @@ var SyncEngine = class {
     this.client = client;
     this.uploader.setClient(client);
     this.downloader.setClient(client);
-  }
-  /**
-   * 获取下载状态标志
-   */
-  get isDownloading() {
-    return this.downloader.isDownloading;
-  }
-  /**
-   * 获取删除本地文件状态标志
-   */
-  get isDeletingLocalFiles() {
-    return this.downloader.isDeletingLocalFiles;
   }
   /**
    * 全量同步：上传所有本地文件到 GitHub
@@ -5734,8 +5720,7 @@ var FileWatcher = class {
     if (!this.shouldSyncFile(file)) {
       return;
     }
-    const currentOp = this.plugin.operationManager.getCurrentOperation();
-    if (this.plugin.syncEngine.isDownloading) {
+    if (this.plugin.operationManager.shouldSuppressModify()) {
       this.addDeferredOperation({
         type: "modify",
         path: file.path,
@@ -5744,6 +5729,7 @@ var FileWatcher = class {
       });
       return;
     }
+    const currentOp = this.plugin.operationManager.getCurrentOperation();
     if (currentOp.isBlocking) {
       this.addDeferredOperation({
         type: "modify",
@@ -5759,7 +5745,7 @@ var FileWatcher = class {
    * 处理文件删除
    */
   handleFileDelete(file) {
-    if (this.plugin.syncEngine.isDeletingLocalFiles) {
+    if (this.plugin.operationManager.shouldSuppressDelete()) {
       return;
     }
     if (!this.plugin.settings.autoSync || !this.plugin.isAuthenticated) {
@@ -6630,6 +6616,8 @@ var StatusBarManager = class {
 var OperationManager = class {
   constructor() {
     this.currentOperation = { type: "idle", startTime: 0 };
+    /** 事件抑制类型（防止 vault 事件循环触发） */
+    this.suppressEvent = "none";
   }
   /**
    * 获取当前操作类型
@@ -6725,6 +6713,7 @@ var OperationManager = class {
    */
   end() {
     this.currentOperation = { type: "idle", startTime: 0 };
+    this.suppressEvent = "none";
   }
   /**
    * 检查是否可以启动新操作
@@ -6740,6 +6729,39 @@ var OperationManager = class {
       return true;
     }
     return false;
+  }
+  // ========== 事件抑制方法（防止循环触发） ==========
+  /**
+   * 抑制 modify/create 事件
+   * 用于下载文件时防止触发 handleFileChange
+   */
+  suppressModifyEvents() {
+    this.suppressEvent = "modify";
+  }
+  /**
+   * 抑制 delete 事件
+   * 用于删除本地文件时防止触发 handleFileDelete
+   */
+  suppressDeleteEvents() {
+    this.suppressEvent = "delete";
+  }
+  /**
+   * 清除事件抑制
+   */
+  clearSuppress() {
+    this.suppressEvent = "none";
+  }
+  /**
+   * 检查是否应该抑制 modify/create 事件
+   */
+  shouldSuppressModify() {
+    return this.suppressEvent === "modify";
+  }
+  /**
+   * 检查是否应该抑制 delete 事件
+   */
+  shouldSuppressDelete() {
+    return this.suppressEvent === "delete";
   }
 };
 

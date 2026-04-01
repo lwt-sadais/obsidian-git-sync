@@ -36,20 +36,6 @@ export class SyncEngine {
     }
 
     /**
-     * 获取下载状态标志
-     */
-    get isDownloading(): boolean {
-        return this.downloader.isDownloading;
-    }
-
-    /**
-     * 获取删除本地文件状态标志
-     */
-    get isDeletingLocalFiles(): boolean {
-        return this.downloader.isDeletingLocalFiles;
-    }
-
-    /**
      * 全量同步：上传所有本地文件到 GitHub
      */
     async fullSync(): Promise<SyncResult> {
