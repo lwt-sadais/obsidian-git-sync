@@ -5424,7 +5424,7 @@ var SyncEngine = class {
    */
   async deleteLocalFiles(remoteFileMap, result) {
     const localFiles = getAllVaultFiles(this.plugin.app.vault);
-    this.downloader.isDeletingLocalFiles = true;
+    this.plugin.operationManager.suppressDeleteEvents();
     try {
       for (const localFile of localFiles) {
         if (this.uploader.shouldExcludeFile(localFile.path)) {
@@ -5435,10 +5435,11 @@ var SyncEngine = class {
         }
         if (!remoteFileMap.has(localFile.path)) {
           const fileState = this.plugin.stateManager.getFileState(localFile.path);
-          if (fileState && fileState.status === "synced") {
+          if (fileState && fileState.remoteSha) {
             try {
               await this.plugin.app.vault.delete(localFile);
               result.deletedFiles++;
+              await this.plugin.stateManager.clearFileState(localFile.path);
               logger.debug("Deleted local file (remote deleted):", localFile.path);
             } catch (error) {
               result.errorFiles++;
@@ -5448,7 +5449,7 @@ var SyncEngine = class {
         }
       }
     } finally {
-      this.downloader.isDeletingLocalFiles = false;
+      this.plugin.operationManager.clearSuppress();
     }
   }
   /**
@@ -5477,7 +5478,7 @@ var SyncEngine = class {
       }
       const remoteInfo = remoteFileMap.get(localFile.path);
       const fileState = this.plugin.stateManager.getFileState(localFile.path);
-      const needsUpload = !remoteInfo || !fileState || new Date(localFile.stat.mtime) > new Date(fileState.localModified);
+      const needsUpload = !remoteInfo && !(fileState == null ? void 0 : fileState.remoteSha) || remoteInfo && (!fileState || new Date(localFile.stat.mtime) > new Date(fileState.localModified));
       if (needsUpload) {
         const success = await this.uploader.uploadSingleFile(localFile, remoteInfo == null ? void 0 : remoteInfo.sha);
         if (success) {

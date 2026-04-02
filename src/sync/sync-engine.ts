@@ -171,7 +171,7 @@ export class SyncEngine {
     ): Promise<void> {
         const localFiles = getAllVaultFiles(this.plugin.app.vault);
 
-        this.downloader.isDeletingLocalFiles = true;
+        this.plugin.operationManager.suppressDeleteEvents();
         try {
             for (const localFile of localFiles) {
                 // 跳过排除规则
@@ -186,12 +186,15 @@ export class SyncEngine {
 
                 // 如果本地存在但远程不存在
                 if (!remoteFileMap.has(localFile.path)) {
-                    // 只删除曾经同步过的文件
                     const fileState = this.plugin.stateManager.getFileState(localFile.path);
-                    if (fileState && fileState.status === 'synced') {
+                    // 有同步记录（remoteSha 存在说明曾经上传过）就删除本地文件
+                    // 这样可以正确处理：启动时被标记为 pending 但之前已同步的文件
+                    if (fileState && fileState.remoteSha) {
                         try {
                             await this.plugin.app.vault.delete(localFile);
                             result.deletedFiles++;
+                            // 清除文件状态记录
+                            await this.plugin.stateManager.clearFileState(localFile.path);
                             logger.debug('Deleted local file (remote deleted):', localFile.path);
                         } catch (error) {
                             result.errorFiles++;
@@ -201,7 +204,7 @@ export class SyncEngine {
                 }
             }
         } finally {
-            this.downloader.isDeletingLocalFiles = false;
+            this.plugin.operationManager.clearSuppress();
         }
     }
 
@@ -249,9 +252,12 @@ export class SyncEngine {
             const fileState = this.plugin.stateManager.getFileState(localFile.path);
 
             // 判断是否需要上传
-            const needsUpload = !remoteInfo ||
-                !fileState ||
-                new Date(localFile.stat.mtime) > new Date(fileState.localModified);
+            // 1. 远程不存在 + 无同步记录 = 新建文件 → 需要上传
+            // 2. 远程不存在 + 有同步记录(remoteSha) = 远程已删除 → 不上传
+            // 3. 远程存在 + 无同步记录 = 首次同步 → 需要上传
+            // 4. 远程存在 + 有本地修改 = 需要上传
+            const needsUpload = (!remoteInfo && !fileState?.remoteSha) ||
+                (remoteInfo && (!fileState || new Date(localFile.stat.mtime) > new Date(fileState.localModified)));
 
             if (needsUpload) {
                 const success = await this.uploader.uploadSingleFile(localFile, remoteInfo?.sha);
