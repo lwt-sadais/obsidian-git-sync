@@ -135,7 +135,19 @@ const translations = {
         timeJustNow: '刚刚',
         timeMinutesAgo: '{count} 分钟前',
         timeHoursAgo: '{count} 小时前',
-        timeDaysAgo: '{count} 天前'
+        timeDaysAgo: '{count} 天前',
+
+        // 未同步文件确认
+        unsyncedFilesTitle: '发现未同步的本地文件',
+        unsyncedFilesDesc: '检测到 {count} 个本地文件在远程不存在，这些文件尚未同步。请选择如何处理：',
+        unsyncedKeepAll: '保留并上传',
+        unsyncedDeleteAll: '删除本地文件',
+        unsyncedSkipPull: '取消本次操作',
+        unsyncedUploading: '正在上传未同步文件...',
+        unsyncedUploadComplete: '已上传 {count} 个未同步文件',
+        unsyncedDeleting: '正在删除本地文件...',
+        unsyncedDeleteComplete: '已删除 {count} 个本地文件',
+        unsyncedPullCancelled: '已取消拉取操作'
     },
 
     en: {
@@ -268,7 +280,19 @@ const translations = {
         timeJustNow: 'just now',
         timeMinutesAgo: '{count}m ago',
         timeHoursAgo: '{count}h ago',
-        timeDaysAgo: '{count}d ago'
+        timeDaysAgo: '{count}d ago',
+
+        // Unsynced files confirmation
+        unsyncedFilesTitle: 'Unsynced Local Files Found',
+        unsyncedFilesDesc: '{count} local files do not exist on remote. These files have not been synced yet. Please choose how to handle them:',
+        unsyncedKeepAll: 'Keep and Upload',
+        unsyncedDeleteAll: 'Delete Local Files',
+        unsyncedSkipPull: 'Cancel Operation',
+        unsyncedUploading: 'Uploading unsynced files...',
+        unsyncedUploadComplete: 'Uploaded {count} unsynced files',
+        unsyncedDeleting: 'Deleting local files...',
+        unsyncedDeleteComplete: 'Deleted {count} local files',
+        unsyncedPullCancelled: 'Pull operation cancelled'
     }
 };
 

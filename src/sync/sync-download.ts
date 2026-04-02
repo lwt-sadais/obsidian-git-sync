@@ -9,6 +9,7 @@ import { GitHubFile } from '../api/types';
 import { SyncResult, createSyncResult, createErrorResult, getAllVaultFiles, isTempFileName, sleep } from './sync-utils';
 import { base64ToArrayBuffer } from '../utils/encoding';
 import { BATCH_PAUSE_THRESHOLD, BATCH_PAUSE_MS, REMOTE_SKIP_FILES, REMOTE_SKIP_PREFIXES } from '../constants';
+import { showUnsyncedFilesModal, UnsyncedFileAction } from '../ui/unsynced-files-modal';
 import { t } from '../i18n';
 import { logger } from '../utils/logger';
 
@@ -57,10 +58,35 @@ export class SyncDownloader {
             const remoteFiles = await this.client.getAllFiles(repoOwner, repoName);
             const remoteFilePaths = new Set(remoteFiles.map(f => f.path));
 
+            // 检查未同步的本地文件（远程不存在且无同步记录）
+            const unsyncedFiles = this.findUnsyncedFiles(remoteFilePaths);
+
+            // 如果有未同步文件，先询问用户
+            if (unsyncedFiles.length > 0) {
+                const action = await showUnsyncedFilesModal(this.plugin, unsyncedFiles);
+
+                if (action === 'skip') {
+                    // 用户取消操作
+                    new Notice(t('unsyncedPullCancelled'));
+                    if (this.plugin.statusBar) {
+                        this.plugin.statusBar.endSync(false);
+                    }
+                    return { ...result, success: false, errors: ['Cancelled by user'] };
+                }
+
+                if (action === 'keep-upload') {
+                    // 保留并上传未同步文件
+                    await this.uploadUnsyncedFiles(unsyncedFiles, result);
+                } else {
+                    // 删除未同步文件
+                    await this.deleteUnsyncedFiles(unsyncedFiles, result);
+                }
+            }
+
             // 下载远程文件
             await this.downloadRemoteFiles(remoteFiles, repoOwner, repoName, result);
 
-            // 删除本地多余的文件
+            // 删除本地多余的文件（已同步但远程删除的文件）
             await this.deleteLocalFiles(remoteFilePaths, result);
 
             // 完成
@@ -72,6 +98,94 @@ export class SyncDownloader {
                 this.plugin.statusBar.endSync(false);
             }
             return createErrorResult(String(error));
+        }
+    }
+
+    /**
+     * 查找未同步的本地文件（远程不存在且无同步记录）
+     */
+    private findUnsyncedFiles(remoteFilePaths: Set<string>): TFile[] {
+        const localFiles = getAllVaultFiles(this.plugin.app.vault);
+        const unsyncedFiles: TFile[] = [];
+
+        for (const localFile of localFiles) {
+            // 跳过排除规则
+            if (this.shouldExcludeFile(localFile.path)) {
+                continue;
+            }
+
+            // 跳过临时文件名
+            if (isTempFileName(localFile.basename)) {
+                continue;
+            }
+
+            // 远程不存在
+            if (!remoteFilePaths.has(localFile.path)) {
+                const fileState = this.plugin.stateManager.getFileState(localFile.path);
+                // 无同步记录（从未上传过）
+                if (!fileState || !fileState.remoteSha) {
+                    unsyncedFiles.push(localFile);
+                }
+            }
+        }
+
+        return unsyncedFiles;
+    }
+
+    /**
+     * 上传未同步文件
+     */
+    private async uploadUnsyncedFiles(files: TFile[], result: SyncResult): Promise<void> {
+        new Notice(t('unsyncedUploading'));
+
+        let successCount = 0;
+        let errorCount = 0;
+
+        for (const file of files) {
+            const success = await this.plugin.syncEngine.uploadSingleFile(file);
+            if (success) {
+                successCount++;
+            } else {
+                errorCount++;
+                result.errors.push(`Failed to upload: ${file.path}`);
+            }
+        }
+
+        result.uploadedFiles += successCount;
+        result.errorFiles += errorCount;
+
+        if (successCount > 0) {
+            new Notice(t('unsyncedUploadComplete', { count: successCount }));
+        }
+    }
+
+    /**
+     * 删除未同步文件（用户选择删除）
+     */
+    private async deleteUnsyncedFiles(files: TFile[], result: SyncResult): Promise<void> {
+        new Notice(t('unsyncedDeleting'));
+
+        this.plugin.operationManager.suppressDeleteEvents();
+        try {
+            let deleteCount = 0;
+            for (const file of files) {
+                try {
+                    await this.plugin.app.vault.delete(file);
+                    deleteCount++;
+                    // 清除文件状态
+                    await this.plugin.stateManager.clearFileState(file.path);
+                } catch (error) {
+                    result.errorFiles++;
+                    result.errors.push(`Failed to delete: ${file.path}`);
+                }
+            }
+            result.deletedFiles += deleteCount;
+
+            if (deleteCount > 0) {
+                new Notice(t('unsyncedDeleteComplete', { count: deleteCount }));
+            }
+        } finally {
+            this.plugin.operationManager.clearSuppress();
         }
     }
 
@@ -217,7 +331,7 @@ export class SyncDownloader {
     }
 
     /**
-     * 删除本地多余的文件
+     * 删除本地多余的文件（已同步但远程已删除的文件）
      */
     private async deleteLocalFiles(
         remoteFilePaths: Set<string>,
@@ -238,15 +352,22 @@ export class SyncDownloader {
                     continue;
                 }
 
-                // 如果本地存在但远程不存在，删除本地文件
+                // 如果本地存在但远程不存在
                 if (!remoteFilePaths.has(localFile.path)) {
-                    try {
-                        await this.plugin.app.vault.delete(localFile);
-                        result.deletedFiles++;
-                        logger.debug('Deleted local file (remote deleted):', localFile.path);
-                    } catch (error) {
-                        result.errorFiles++;
-                        result.errors.push(`Failed to delete local: ${localFile.path}`);
+                    const fileState = this.plugin.stateManager.getFileState(localFile.path);
+                    // 只删除有同步记录的文件（曾经同步过但远程已删除）
+                    // 未同步的文件已经在前面处理过了
+                    if (fileState && fileState.remoteSha) {
+                        try {
+                            await this.plugin.app.vault.delete(localFile);
+                            result.deletedFiles++;
+                            // 清除文件状态
+                            await this.plugin.stateManager.clearFileState(localFile.path);
+                            logger.debug('Deleted local file (remote deleted):', localFile.path);
+                        } catch (error) {
+                            result.errorFiles++;
+                            result.errors.push(`Failed to delete local: ${localFile.path}`);
+                        }
                     }
                 }
             }

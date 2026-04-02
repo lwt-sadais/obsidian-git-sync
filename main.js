@@ -138,7 +138,7 @@ __export(main_exports, {
   default: () => GitSyncPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian11 = require("obsidian");
+var import_obsidian12 = require("obsidian");
 
 // node_modules/universal-user-agent/index.js
 function getUserAgent() {
@@ -4501,7 +4501,18 @@ var translations = {
     timeJustNow: "\u521A\u521A",
     timeMinutesAgo: "{count} \u5206\u949F\u524D",
     timeHoursAgo: "{count} \u5C0F\u65F6\u524D",
-    timeDaysAgo: "{count} \u5929\u524D"
+    timeDaysAgo: "{count} \u5929\u524D",
+    // 未同步文件确认
+    unsyncedFilesTitle: "\u53D1\u73B0\u672A\u540C\u6B65\u7684\u672C\u5730\u6587\u4EF6",
+    unsyncedFilesDesc: "\u68C0\u6D4B\u5230 {count} \u4E2A\u672C\u5730\u6587\u4EF6\u5728\u8FDC\u7A0B\u4E0D\u5B58\u5728\uFF0C\u8FD9\u4E9B\u6587\u4EF6\u5C1A\u672A\u540C\u6B65\u3002\u8BF7\u9009\u62E9\u5982\u4F55\u5904\u7406\uFF1A",
+    unsyncedKeepAll: "\u4FDD\u7559\u5E76\u4E0A\u4F20",
+    unsyncedDeleteAll: "\u5220\u9664\u672C\u5730\u6587\u4EF6",
+    unsyncedSkipPull: "\u53D6\u6D88\u672C\u6B21\u64CD\u4F5C",
+    unsyncedUploading: "\u6B63\u5728\u4E0A\u4F20\u672A\u540C\u6B65\u6587\u4EF6...",
+    unsyncedUploadComplete: "\u5DF2\u4E0A\u4F20 {count} \u4E2A\u672A\u540C\u6B65\u6587\u4EF6",
+    unsyncedDeleting: "\u6B63\u5728\u5220\u9664\u672C\u5730\u6587\u4EF6...",
+    unsyncedDeleteComplete: "\u5DF2\u5220\u9664 {count} \u4E2A\u672C\u5730\u6587\u4EF6",
+    unsyncedPullCancelled: "\u5DF2\u53D6\u6D88\u62C9\u53D6\u64CD\u4F5C"
   },
   en: {
     // Settings title
@@ -4621,7 +4632,18 @@ var translations = {
     timeJustNow: "just now",
     timeMinutesAgo: "{count}m ago",
     timeHoursAgo: "{count}h ago",
-    timeDaysAgo: "{count}d ago"
+    timeDaysAgo: "{count}d ago",
+    // Unsynced files confirmation
+    unsyncedFilesTitle: "Unsynced Local Files Found",
+    unsyncedFilesDesc: "{count} local files do not exist on remote. These files have not been synced yet. Please choose how to handle them:",
+    unsyncedKeepAll: "Keep and Upload",
+    unsyncedDeleteAll: "Delete Local Files",
+    unsyncedSkipPull: "Cancel Operation",
+    unsyncedUploading: "Uploading unsynced files...",
+    unsyncedUploadComplete: "Uploaded {count} unsynced files",
+    unsyncedDeleting: "Deleting local files...",
+    unsyncedDeleteComplete: "Deleted {count} local files",
+    unsyncedPullCancelled: "Pull operation cancelled"
   }
 };
 function getSystemLanguage() {
@@ -4795,7 +4817,7 @@ var RepoManager = class {
 };
 
 // src/sync/sync-engine.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // src/sync/sync-upload.ts
 var import_obsidian3 = require("obsidian");
@@ -5088,7 +5110,78 @@ var SyncUploader = class {
 };
 
 // src/sync/sync-download.ts
+var import_obsidian5 = require("obsidian");
+
+// src/ui/unsynced-files-modal.ts
 var import_obsidian4 = require("obsidian");
+var UnsyncedFilesModal = class extends import_obsidian4.Modal {
+  constructor(app, plugin, unsyncedFiles, onResolve) {
+    super(app);
+    /**
+     * 每个文件的选择
+     * true = 保留并上传, false = 删除
+     */
+    this.fileChoices = /* @__PURE__ */ new Map();
+    this.plugin = plugin;
+    this.unsyncedFiles = unsyncedFiles;
+    this.onResolve = onResolve;
+    for (const file of unsyncedFiles) {
+      this.fileChoices.set(file.path, true);
+    }
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("git-sync-unsynced-modal");
+    contentEl.createEl("h2", { text: t("unsyncedFilesTitle") });
+    contentEl.createEl("p", {
+      text: t("unsyncedFilesDesc", { count: this.unsyncedFiles.length }),
+      cls: "git-sync-unsynced-desc"
+    });
+    const listEl = contentEl.createDiv({ cls: "git-sync-unsynced-list" });
+    for (const file of this.unsyncedFiles) {
+      this.renderFileItem(listEl, file);
+    }
+    const buttonContainer = contentEl.createDiv({ cls: "git-sync-unsynced-buttons" });
+    new import_obsidian4.Setting(buttonContainer).addButton((button) => button.setButtonText(t("unsyncedKeepAll")).setCta().onClick(() => {
+      this.close();
+      this.onResolve("keep-upload");
+    })).addButton((button) => button.setButtonText(t("unsyncedDeleteAll")).setWarning().onClick(() => {
+      this.close();
+      this.onResolve("delete");
+    })).addButton((button) => button.setButtonText(t("cancel")).onClick(() => {
+      this.close();
+      this.onResolve("skip");
+    }));
+  }
+  renderFileItem(container, file) {
+    const itemEl = container.createDiv({ cls: "git-sync-unsynced-item" });
+    const pathEl = itemEl.createDiv({ cls: "git-sync-unsynced-path" });
+    pathEl.createEl("span", { text: "\u{1F4C4}", cls: "git-sync-unsynced-icon" });
+    pathEl.createEl("span", { text: file.path });
+    const sizeKB = Math.round(file.stat.size / 1024);
+    itemEl.createDiv({
+      text: `${sizeKB} KB`,
+      cls: "git-sync-unsynced-size"
+    });
+  }
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
+  }
+};
+function showUnsyncedFilesModal(plugin, unsyncedFiles) {
+  return new Promise((resolve) => {
+    const modal = new UnsyncedFilesModal(
+      plugin.app,
+      plugin,
+      unsyncedFiles,
+      (action) => resolve(action)
+    );
+    modal.open();
+  });
+}
+
+// src/sync/sync-download.ts
 var SyncDownloader = class {
   constructor(plugin) {
     this.client = null;
@@ -5114,11 +5207,27 @@ var SyncDownloader = class {
     if (this.plugin.statusBar) {
       this.plugin.statusBar.startSyncing();
     }
-    new import_obsidian4.Notice(t("startingSync") + "...");
+    new import_obsidian5.Notice(t("startingSync") + "...");
     const result = createSyncResult();
     try {
       const remoteFiles = await this.client.getAllFiles(repoOwner, repoName);
       const remoteFilePaths = new Set(remoteFiles.map((f) => f.path));
+      const unsyncedFiles = this.findUnsyncedFiles(remoteFilePaths);
+      if (unsyncedFiles.length > 0) {
+        const action = await showUnsyncedFilesModal(this.plugin, unsyncedFiles);
+        if (action === "skip") {
+          new import_obsidian5.Notice(t("unsyncedPullCancelled"));
+          if (this.plugin.statusBar) {
+            this.plugin.statusBar.endSync(false);
+          }
+          return { ...result, success: false, errors: ["Cancelled by user"] };
+        }
+        if (action === "keep-upload") {
+          await this.uploadUnsyncedFiles(unsyncedFiles, result);
+        } else {
+          await this.deleteUnsyncedFiles(unsyncedFiles, result);
+        }
+      }
       await this.downloadRemoteFiles(remoteFiles, repoOwner, repoName, result);
       await this.deleteLocalFiles(remoteFilePaths, result);
       this.finishPull(result);
@@ -5129,6 +5238,76 @@ var SyncDownloader = class {
         this.plugin.statusBar.endSync(false);
       }
       return createErrorResult(String(error));
+    }
+  }
+  /**
+   * 查找未同步的本地文件（远程不存在且无同步记录）
+   */
+  findUnsyncedFiles(remoteFilePaths) {
+    const localFiles = getAllVaultFiles(this.plugin.app.vault);
+    const unsyncedFiles = [];
+    for (const localFile of localFiles) {
+      if (this.shouldExcludeFile(localFile.path)) {
+        continue;
+      }
+      if (isTempFileName(localFile.basename)) {
+        continue;
+      }
+      if (!remoteFilePaths.has(localFile.path)) {
+        const fileState = this.plugin.stateManager.getFileState(localFile.path);
+        if (!fileState || !fileState.remoteSha) {
+          unsyncedFiles.push(localFile);
+        }
+      }
+    }
+    return unsyncedFiles;
+  }
+  /**
+   * 上传未同步文件
+   */
+  async uploadUnsyncedFiles(files, result) {
+    new import_obsidian5.Notice(t("unsyncedUploading"));
+    let successCount = 0;
+    let errorCount = 0;
+    for (const file of files) {
+      const success = await this.plugin.syncEngine.uploadSingleFile(file);
+      if (success) {
+        successCount++;
+      } else {
+        errorCount++;
+        result.errors.push(`Failed to upload: ${file.path}`);
+      }
+    }
+    result.uploadedFiles += successCount;
+    result.errorFiles += errorCount;
+    if (successCount > 0) {
+      new import_obsidian5.Notice(t("unsyncedUploadComplete", { count: successCount }));
+    }
+  }
+  /**
+   * 删除未同步文件（用户选择删除）
+   */
+  async deleteUnsyncedFiles(files, result) {
+    new import_obsidian5.Notice(t("unsyncedDeleting"));
+    this.plugin.operationManager.suppressDeleteEvents();
+    try {
+      let deleteCount = 0;
+      for (const file of files) {
+        try {
+          await this.plugin.app.vault.delete(file);
+          deleteCount++;
+          await this.plugin.stateManager.clearFileState(file.path);
+        } catch (error) {
+          result.errorFiles++;
+          result.errors.push(`Failed to delete: ${file.path}`);
+        }
+      }
+      result.deletedFiles += deleteCount;
+      if (deleteCount > 0) {
+        new import_obsidian5.Notice(t("unsyncedDeleteComplete", { count: deleteCount }));
+      }
+    } finally {
+      this.plugin.operationManager.clearSuppress();
     }
   }
   /**
@@ -5156,7 +5335,7 @@ var SyncDownloader = class {
       }
       const content = base64ToArrayBuffer(remoteFile.content);
       const localFile = this.plugin.app.vault.getAbstractFileByPath(path);
-      if (localFile instanceof import_obsidian4.TFile) {
+      if (localFile instanceof import_obsidian5.TFile) {
         if (!forceOverwrite) {
           const localModified = new Date(localFile.stat.mtime);
           const fileState = this.plugin.stateManager.getFileState(path);
@@ -5167,7 +5346,7 @@ var SyncDownloader = class {
                 this.plugin.stateManager.getConflictFiles().length
               );
             }
-            new import_obsidian4.Notice(t("conflictDetected", { path }));
+            new import_obsidian5.Notice(t("conflictDetected", { path }));
             return false;
           }
         }
@@ -5197,7 +5376,7 @@ var SyncDownloader = class {
       return true;
     } catch (error) {
       logger.error("Failed to download file:", path, error);
-      new import_obsidian4.Notice(t("downloadFailed", { path }));
+      new import_obsidian5.Notice(t("downloadFailed", { path }));
       return false;
     }
   }
@@ -5234,7 +5413,7 @@ var SyncDownloader = class {
     }
   }
   /**
-   * 删除本地多余的文件
+   * 删除本地多余的文件（已同步但远程已删除的文件）
    */
   async deleteLocalFiles(remoteFilePaths, result) {
     const localFiles = getAllVaultFiles(this.plugin.app.vault);
@@ -5248,13 +5427,17 @@ var SyncDownloader = class {
           continue;
         }
         if (!remoteFilePaths.has(localFile.path)) {
-          try {
-            await this.plugin.app.vault.delete(localFile);
-            result.deletedFiles++;
-            logger.debug("Deleted local file (remote deleted):", localFile.path);
-          } catch (error) {
-            result.errorFiles++;
-            result.errors.push(`Failed to delete local: ${localFile.path}`);
+          const fileState = this.plugin.stateManager.getFileState(localFile.path);
+          if (fileState && fileState.remoteSha) {
+            try {
+              await this.plugin.app.vault.delete(localFile);
+              result.deletedFiles++;
+              await this.plugin.stateManager.clearFileState(localFile.path);
+              logger.debug("Deleted local file (remote deleted):", localFile.path);
+            } catch (error) {
+              result.errorFiles++;
+              result.errors.push(`Failed to delete local: ${localFile.path}`);
+            }
           }
         }
       }
@@ -5267,7 +5450,7 @@ var SyncDownloader = class {
    */
   async ensureFolderExists(folderPath) {
     const folder = this.plugin.app.vault.getAbstractFileByPath(folderPath);
-    if (folder instanceof import_obsidian4.TFolder) {
+    if (folder instanceof import_obsidian5.TFolder) {
       return;
     }
     const parentPath = folderPath.substring(0, folderPath.lastIndexOf("/"));
@@ -5284,7 +5467,7 @@ var SyncDownloader = class {
       this.plugin.statusBar.endSync(result.errorFiles === 0);
     }
     const message = result.deletedFiles > 0 ? t("pullWithDeletes", { downloaded: result.uploadedFiles, deleted: result.deletedFiles }) : t("pullCompleted", { count: result.uploadedFiles });
-    new import_obsidian4.Notice(message);
+    new import_obsidian5.Notice(message);
   }
   /**
    * 检查是否应该跳过远程文件
@@ -5354,7 +5537,7 @@ var SyncEngine = class {
     if (this.plugin.statusBar) {
       this.plugin.statusBar.startSyncing();
     }
-    new import_obsidian5.Notice(t("startingSync"));
+    new import_obsidian6.Notice(t("startingSync"));
     const result = createSyncResult();
     try {
       const remoteFiles = await this.client.getAllFiles(repoOwner, repoName);
@@ -5409,7 +5592,7 @@ var SyncEngine = class {
    * 处理冲突
    */
   handleConflicts(conflicts, result) {
-    new import_obsidian5.Notice(t("conflictsPaused", { count: conflicts.length }));
+    new import_obsidian6.Notice(t("conflictsPaused", { count: conflicts.length }));
     if (this.plugin.statusBar) {
       this.plugin.statusBar.setConflictCount(conflicts.length);
       this.plugin.statusBar.endSync(false);
@@ -5499,7 +5682,7 @@ var SyncEngine = class {
       this.plugin.statusBar.endSync(result.errorFiles === 0);
     }
     const message = result.deletedFiles > 0 ? t("pullWithDeletes", { downloaded: result.uploadedFiles, deleted: result.deletedFiles }) : t("syncCompleted", { count: result.uploadedFiles });
-    new import_obsidian5.Notice(message);
+    new import_obsidian6.Notice(message);
   }
   /**
    * 上传单个文件
@@ -5688,7 +5871,7 @@ var StateManager = class {
 };
 
 // src/sync/file-watcher.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 var FileWatcher = class {
   constructor(plugin) {
     /** 文件变更 debounce 定时器 */
@@ -5838,7 +6021,7 @@ var FileWatcher = class {
         this.plugin.statusBar.updateProgress(processedFiles, totalFiles, "push");
         this.plugin.operationManager.updateProgress(processedFiles, totalFiles, "push");
         const file = this.plugin.app.vault.getAbstractFileByPath(filePath);
-        if (file instanceof import_obsidian6.TFile) {
+        if (file instanceof import_obsidian7.TFile) {
           const fileState = this.plugin.stateManager.getFileState(filePath);
           const success = await this.plugin.syncEngine.uploadSingleFile(file, fileState == null ? void 0 : fileState.remoteSha);
           if (success) {
@@ -5855,7 +6038,7 @@ var FileWatcher = class {
     }
     this.plugin.statusBar.endSync(errorCount === 0);
     if (successCount > 0) {
-      new import_obsidian6.Notice(t("syncedFiles", { count: successCount }));
+      new import_obsidian7.Notice(t("syncedFiles", { count: successCount }));
     }
     const pendingCount = this.plugin.stateManager.getPendingFiles().length;
     this.plugin.statusBar.setPendingCount(pendingCount);
@@ -5927,7 +6110,7 @@ var FileWatcher = class {
         break;
       case "modify": {
         const file = this.plugin.app.vault.getAbstractFileByPath(op.path);
-        if (!(file instanceof import_obsidian6.TFile)) break;
+        if (!(file instanceof import_obsidian7.TFile)) break;
         const fileState = this.plugin.stateManager.getFileState(op.path);
         const localModified = new Date(file.stat.mtime);
         if (fileState && localModified <= new Date(fileState.localModified)) {
@@ -5942,7 +6125,7 @@ var FileWatcher = class {
           await this.deleteRemoteFile(op.oldPath);
         }
         const file = this.plugin.app.vault.getAbstractFileByPath(op.path);
-        if (file instanceof import_obsidian6.TFile) {
+        if (file instanceof import_obsidian7.TFile) {
           const fileState = this.plugin.stateManager.getFileState(op.path);
           await this.plugin.syncEngine.uploadSingleFile(file, fileState == null ? void 0 : fileState.remoteSha);
         }
@@ -6000,7 +6183,7 @@ var FileWatcher = class {
     }
     this.plugin.statusBar.endSync(successCount === totalFiles);
     if (successCount > 0) {
-      new import_obsidian6.Notice(t("deletedFromRemote", { path: `${successCount} files` }));
+      new import_obsidian7.Notice(t("deletedFromRemote", { path: `${successCount} files` }));
     }
     await this.processDeferredOperations();
   }
@@ -6018,19 +6201,19 @@ var FileWatcher = class {
     this.plugin.syncEngine.setClient(client);
     const success = await this.plugin.syncEngine.deleteRemoteFile(path);
     if (success) {
-      new import_obsidian6.Notice(t("deletedFromRemote", { path }));
+      new import_obsidian7.Notice(t("deletedFromRemote", { path }));
     }
   }
 };
 
 // src/ui/status-bar.ts
-var import_obsidian9 = require("obsidian");
+var import_obsidian10 = require("obsidian");
 
 // src/ui/conflict-modal.ts
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 
 // src/sync/conflict-handler.ts
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 var ConflictHandler = class {
   constructor(plugin) {
     this.plugin = plugin;
@@ -6161,11 +6344,11 @@ var ConflictHandler = class {
             remoteSha,
             (/* @__PURE__ */ new Date()).toISOString()
           );
-          new import_obsidian7.Notice(t("conflictResolvedKeepLocal", { path }));
+          new import_obsidian8.Notice(t("conflictResolvedKeepLocal", { path }));
           break;
         case "use-remote":
           const localFile = this.vault.getAbstractFileByPath(path);
-          if (localFile instanceof import_obsidian7.TFile) {
+          if (localFile instanceof import_obsidian8.TFile) {
             await this.vault.modify(localFile, remoteContent);
           }
           await this.plugin.stateManager.updateFileSynced(
@@ -6173,12 +6356,12 @@ var ConflictHandler = class {
             remoteSha,
             (/* @__PURE__ */ new Date()).toISOString()
           );
-          new import_obsidian7.Notice(t("conflictResolvedUseRemote", { path }));
+          new import_obsidian8.Notice(t("conflictResolvedUseRemote", { path }));
           break;
         case "keep-both":
           const conflictPath = this.generateConflictFilename(path);
           const originalFile = this.vault.getAbstractFileByPath(path);
-          if (originalFile instanceof import_obsidian7.TFile) {
+          if (originalFile instanceof import_obsidian8.TFile) {
             await this.vault.create(conflictPath, remoteContent);
             await this.plugin.stateManager.updateFileSynced(
               path,
@@ -6190,23 +6373,23 @@ var ConflictHandler = class {
               (/* @__PURE__ */ new Date()).toISOString()
             );
           }
-          new import_obsidian7.Notice(t("conflictResolvedKeepBoth", { path, conflictPath }));
+          new import_obsidian8.Notice(t("conflictResolvedKeepBoth", { path, conflictPath }));
           break;
         case "smart-merge":
           if (isBinary) {
-            new import_obsidian7.Notice(t("conflictBinaryNoMerge", { path }));
+            new import_obsidian8.Notice(t("conflictBinaryNoMerge", { path }));
             return false;
           }
           const mergeResult = this.smartMerge(localContent, remoteContent);
           if (mergeResult.hasConflictBlocks) {
             const file = this.vault.getAbstractFileByPath(path);
-            if (file instanceof import_obsidian7.TFile) {
+            if (file instanceof import_obsidian8.TFile) {
               await this.vault.modify(file, mergeResult.content);
             }
-            new import_obsidian7.Notice(t("conflictMergedWithBlocks", { path }));
+            new import_obsidian8.Notice(t("conflictMergedWithBlocks", { path }));
           } else {
             const file = this.vault.getAbstractFileByPath(path);
-            if (file instanceof import_obsidian7.TFile) {
+            if (file instanceof import_obsidian8.TFile) {
               await this.vault.modify(file, mergeResult.content);
             }
             await this.plugin.stateManager.updateFileSynced(
@@ -6214,14 +6397,14 @@ var ConflictHandler = class {
               remoteSha,
               (/* @__PURE__ */ new Date()).toISOString()
             );
-            new import_obsidian7.Notice(t("conflictMerged", { path }));
+            new import_obsidian8.Notice(t("conflictMerged", { path }));
           }
           break;
       }
       return true;
     } catch (error) {
       logger.error("Failed to resolve conflict:", path, error);
-      new import_obsidian7.Notice(t("conflictResolveFailed", { path }));
+      new import_obsidian8.Notice(t("conflictResolveFailed", { path }));
       return false;
     }
   }
@@ -6245,7 +6428,7 @@ var ConflictHandler = class {
 };
 
 // src/ui/conflict-modal.ts
-var ConflictResolutionModal = class extends import_obsidian8.Modal {
+var ConflictResolutionModal = class extends import_obsidian9.Modal {
   constructor(app, plugin) {
     super(app);
     this.conflicts = [];
@@ -6268,7 +6451,7 @@ var ConflictResolutionModal = class extends import_obsidian8.Modal {
       this.renderConflictItem(listEl, conflict);
     }
     const buttonContainer = contentEl.createDiv({ cls: "git-sync-conflict-buttons" });
-    new import_obsidian8.Setting(buttonContainer).addButton((button) => button.setButtonText(t("applyResolutions")).setCta().onClick(async () => {
+    new import_obsidian9.Setting(buttonContainer).addButton((button) => button.setButtonText(t("applyResolutions")).setCta().onClick(async () => {
       await this.applyResolutions();
     })).addButton((button) => button.setButtonText(t("cancel")).onClick(() => {
       this.close();
@@ -6288,7 +6471,7 @@ var ConflictResolutionModal = class extends import_obsidian8.Modal {
     for (const path of conflictPaths) {
       const localFile = this.app.vault.getAbstractFileByPath(path);
       const fileState = this.plugin.stateManager.getFileState(path);
-      if (!(localFile instanceof import_obsidian8.TFile) || !fileState) {
+      if (!(localFile instanceof import_obsidian9.TFile) || !fileState) {
         continue;
       }
       try {
@@ -6337,7 +6520,7 @@ var ConflictResolutionModal = class extends import_obsidian8.Modal {
       { value: "smart-merge", label: t("conflictSmartMerge"), desc: t("conflictSmartMergeDesc") }
     ];
     const availableOptions = conflict.isBinary ? options.filter((o) => o.value !== "smart-merge") : options;
-    new import_obsidian8.Setting(optionsEl).addDropdown((dropdown) => {
+    new import_obsidian9.Setting(optionsEl).addDropdown((dropdown) => {
       dropdown.addOptions(availableOptions.reduce((acc, o) => {
         acc[o.value] = o.label;
         return acc;
@@ -6346,11 +6529,11 @@ var ConflictResolutionModal = class extends import_obsidian8.Modal {
       });
     });
     const diffButtonEl = itemEl.createDiv({ cls: "git-sync-conflict-diff-button" });
-    new import_obsidian8.Setting(diffButtonEl).addButton((button) => button.setButtonText(t("conflictViewDiff")).onClick(() => {
+    new import_obsidian9.Setting(diffButtonEl).addButton((button) => button.setButtonText(t("conflictViewDiff")).onClick(() => {
       if (!conflict.isBinary) {
         new ConflictDiffModal(this.app, this.plugin, conflict).open();
       } else {
-        new import_obsidian8.Notice(t("conflictBinaryNoDiff"));
+        new import_obsidian9.Notice(t("conflictBinaryNoDiff"));
       }
     }));
   }
@@ -6361,7 +6544,7 @@ var ConflictResolutionModal = class extends import_obsidian8.Modal {
     }
     const result = await this.conflictHandler.resolveConflicts(this.conflicts, this.resolutions);
     if (result.success > 0) {
-      new import_obsidian8.Notice(t("conflictResolvedCount", {
+      new import_obsidian9.Notice(t("conflictResolvedCount", {
         success: result.success,
         failed: result.failed
       }));
@@ -6382,7 +6565,7 @@ var ConflictResolutionModal = class extends import_obsidian8.Modal {
     }
   }
 };
-var ConflictDiffModal = class extends import_obsidian8.Modal {
+var ConflictDiffModal = class extends import_obsidian9.Modal {
   constructor(app, plugin, conflict) {
     super(app);
     this.plugin = plugin;
@@ -6400,24 +6583,24 @@ var ConflictDiffModal = class extends import_obsidian8.Modal {
     const localSection = diffContainer.createDiv({ cls: "git-sync-conflict-diff-section" });
     localSection.createEl("h3", { text: t("conflictLocalVersion") });
     const localContentEl = localSection.createDiv({ cls: "git-sync-conflict-diff-content" });
-    import_obsidian8.MarkdownRenderer.render(
+    import_obsidian9.MarkdownRenderer.render(
       this.app,
       this.conflict.localContent,
       localContentEl,
       this.conflict.path,
-      new import_obsidian8.Component()
+      new import_obsidian9.Component()
     );
     const remoteSection = diffContainer.createDiv({ cls: "git-sync-conflict-diff-section" });
     remoteSection.createEl("h3", { text: t("conflictRemoteVersion") });
     const remoteContentEl = remoteSection.createDiv({ cls: "git-sync-conflict-diff-content" });
-    import_obsidian8.MarkdownRenderer.render(
+    import_obsidian9.MarkdownRenderer.render(
       this.app,
       this.conflict.remoteContent,
       remoteContentEl,
       this.conflict.path,
-      new import_obsidian8.Component()
+      new import_obsidian9.Component()
     );
-    new import_obsidian8.Setting(contentEl).addButton((button) => button.setButtonText(t("close")).onClick(() => {
+    new import_obsidian9.Setting(contentEl).addButton((button) => button.setButtonText(t("close")).onClick(() => {
       this.close();
     }));
   }
@@ -6523,7 +6706,7 @@ var StatusBarManager = class {
   }
   // 显示点击菜单
   showMenu(evt) {
-    const menu = new import_obsidian9.Menu();
+    const menu = new import_obsidian10.Menu();
     const currentOp = this.plugin.operationManager.getCurrentOperation();
     const isBusy = currentOp.type !== "idle";
     if (isBusy) {
@@ -6780,8 +6963,8 @@ var DEFAULT_SETTINGS = {
 };
 
 // src/settings/settings-tab.ts
-var import_obsidian10 = require("obsidian");
-var GitSyncSettingTab = class extends import_obsidian10.PluginSettingTab {
+var import_obsidian11 = require("obsidian");
+var GitSyncSettingTab = class extends import_obsidian11.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -6810,13 +6993,13 @@ var GitSyncSettingTab = class extends import_obsidian10.PluginSettingTab {
    * 渲染已登录状态
    */
   renderLoggedInState(containerEl, username) {
-    new import_obsidian10.Setting(containerEl).setName(t("loggedInAs")).setDesc(username).addButton((button) => button.setButtonText(t("logout")).onClick(async () => {
+    new import_obsidian11.Setting(containerEl).setName(t("loggedInAs")).setDesc(username).addButton((button) => button.setButtonText(t("logout")).onClick(async () => {
       this.plugin.authManager.logout();
       this.plugin.settings.githubToken = "";
       this.plugin.settings.githubUsername = "";
       await this.plugin.saveSettings();
       this.display();
-      new import_obsidian10.Notice(t("logoutSuccess"));
+      new import_obsidian11.Notice(t("logoutSuccess"));
     }));
   }
   /**
@@ -6824,22 +7007,22 @@ var GitSyncSettingTab = class extends import_obsidian10.PluginSettingTab {
    */
   renderLoginState(containerEl) {
     let tokenInput = "";
-    new import_obsidian10.Setting(containerEl).setName(t("githubToken")).setDesc(t("githubTokenDesc")).addText((text) => text.setPlaceholder("ghp_xxx...").setValue("").onChange((value) => {
+    new import_obsidian11.Setting(containerEl).setName(t("githubToken")).setDesc(t("githubTokenDesc")).addText((text) => text.setPlaceholder("ghp_xxx...").setValue("").onChange((value) => {
       tokenInput = value;
     })).addButton((button) => button.setButtonText(t("login")).setCta().onClick(async () => {
       if (!tokenInput) {
-        new import_obsidian10.Notice(t("pleaseLogin"));
+        new import_obsidian11.Notice(t("pleaseLogin"));
         return;
       }
-      new import_obsidian10.Notice(t("verifyingToken"));
+      new import_obsidian11.Notice(t("verifyingToken"));
       const success = await this.plugin.authManager.authenticateWithToken(tokenInput);
       if (success) {
         this.plugin.settings.githubToken = encryptToken(tokenInput);
         await this.plugin.saveSettings();
         this.display();
-        new import_obsidian10.Notice(t("loginSuccess"));
+        new import_obsidian11.Notice(t("loginSuccess"));
       } else {
-        new import_obsidian10.Notice(t("invalidToken"));
+        new import_obsidian11.Notice(t("invalidToken"));
       }
     }));
     containerEl.createEl("p", { text: t("createToken") });
@@ -6869,7 +7052,7 @@ var GitSyncSettingTab = class extends import_obsidian10.PluginSettingTab {
    * 渲染已配置仓库
    */
   renderConfiguredRepo(containerEl) {
-    new import_obsidian10.Setting(containerEl).setName(t("currentRepository")).setDesc(`${this.plugin.settings.repoOwner}/${this.plugin.settings.repoName}`).addButton((button) => button.setButtonText(t("changeRepository")).onClick(() => {
+    new import_obsidian11.Setting(containerEl).setName(t("currentRepository")).setDesc(`${this.plugin.settings.repoOwner}/${this.plugin.settings.repoName}`).addButton((button) => button.setButtonText(t("changeRepository")).onClick(() => {
       const modal = new SelectRepoModal(
         this.plugin.app,
         this.plugin,
@@ -6878,7 +7061,7 @@ var GitSyncSettingTab = class extends import_obsidian10.PluginSettingTab {
           this.plugin.settings.repoName = repo.name;
           this.plugin.saveSettings();
           this.display();
-          new import_obsidian10.Notice(t("repoSelected") + repo.full_name);
+          new import_obsidian11.Notice(t("repoSelected") + repo.full_name);
         }
       );
       modal.open();
@@ -6892,7 +7075,7 @@ var GitSyncSettingTab = class extends import_obsidian10.PluginSettingTab {
       text: t("noRepoConfigured"),
       cls: "setting-item-description"
     });
-    new import_obsidian10.Setting(containerEl).setName(t("createNewRepo")).addButton((button) => button.setButtonText(t("create")).setCta().onClick(() => {
+    new import_obsidian11.Setting(containerEl).setName(t("createNewRepo")).addButton((button) => button.setButtonText(t("create")).setCta().onClick(() => {
       const modal = new CreateRepoModal(
         this.plugin.app,
         this.plugin,
@@ -6901,12 +7084,12 @@ var GitSyncSettingTab = class extends import_obsidian10.PluginSettingTab {
           this.plugin.settings.repoName = repo.name;
           this.plugin.saveSettings();
           this.display();
-          new import_obsidian10.Notice(t("repoCreated") + repo.full_name);
+          new import_obsidian11.Notice(t("repoCreated") + repo.full_name);
         }
       );
       modal.open();
     }));
-    new import_obsidian10.Setting(containerEl).setName(t("selectExistingRepo")).addButton((button) => button.setButtonText(t("select")).onClick(() => {
+    new import_obsidian11.Setting(containerEl).setName(t("selectExistingRepo")).addButton((button) => button.setButtonText(t("select")).onClick(() => {
       const modal = new SelectRepoModal(
         this.plugin.app,
         this.plugin,
@@ -6915,7 +7098,7 @@ var GitSyncSettingTab = class extends import_obsidian10.PluginSettingTab {
           this.plugin.settings.repoName = repo.name;
           this.plugin.saveSettings();
           this.display();
-          new import_obsidian10.Notice(t("repoSelected") + repo.full_name);
+          new import_obsidian11.Notice(t("repoSelected") + repo.full_name);
         }
       );
       modal.open();
@@ -6926,18 +7109,18 @@ var GitSyncSettingTab = class extends import_obsidian10.PluginSettingTab {
    */
   renderSyncSettingsSection(containerEl) {
     containerEl.createEl("h3", { text: t("syncSettings") });
-    new import_obsidian10.Setting(containerEl).setName(t("autoSync")).setDesc(t("autoSyncDesc")).addToggle((toggle) => toggle.setValue(this.plugin.settings.autoSync).onChange(async (value) => {
+    new import_obsidian11.Setting(containerEl).setName(t("autoSync")).setDesc(t("autoSyncDesc")).addToggle((toggle) => toggle.setValue(this.plugin.settings.autoSync).onChange(async (value) => {
       this.plugin.settings.autoSync = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian10.Setting(containerEl).setName(t("fileSizeLimit")).setDesc(t("fileSizeLimitDesc")).addText((text) => text.setValue(String(this.plugin.settings.fileSizeLimit)).onChange(async (value) => {
+    new import_obsidian11.Setting(containerEl).setName(t("fileSizeLimit")).setDesc(t("fileSizeLimitDesc")).addText((text) => text.setValue(String(this.plugin.settings.fileSizeLimit)).onChange(async (value) => {
       const num = parseInt(value);
       if (!isNaN(num) && num <= GITHUB_FILE_SIZE_LIMIT_MB) {
         this.plugin.settings.fileSizeLimit = num;
         await this.plugin.saveSettings();
       }
     }));
-    new import_obsidian10.Setting(containerEl).setName(t("syncOnStartup")).setDesc(t("syncOnStartupDesc")).addToggle((toggle) => toggle.setValue(this.plugin.settings.syncOnStartup).onChange(async (value) => {
+    new import_obsidian11.Setting(containerEl).setName(t("syncOnStartup")).setDesc(t("syncOnStartupDesc")).addToggle((toggle) => toggle.setValue(this.plugin.settings.syncOnStartup).onChange(async (value) => {
       this.plugin.settings.syncOnStartup = value;
       await this.plugin.saveSettings();
     }));
@@ -6945,7 +7128,7 @@ var GitSyncSettingTab = class extends import_obsidian10.PluginSettingTab {
 };
 
 // src/main.ts
-var GitSyncPlugin = class extends import_obsidian11.Plugin {
+var GitSyncPlugin = class extends import_obsidian12.Plugin {
   constructor() {
     super(...arguments);
     this.isAuthenticated = false;
@@ -7027,28 +7210,28 @@ var GitSyncPlugin = class extends import_obsidian11.Plugin {
   registerFileWatcher() {
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian11.TFile) {
+        if (file instanceof import_obsidian12.TFile) {
           this.fileWatcher.handleFileChange(file);
         }
       })
     );
     this.registerEvent(
       this.app.vault.on("create", (file) => {
-        if (file instanceof import_obsidian11.TFile) {
+        if (file instanceof import_obsidian12.TFile) {
           this.fileWatcher.handleFileChange(file);
         }
       })
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (file instanceof import_obsidian11.TFile) {
+        if (file instanceof import_obsidian12.TFile) {
           this.fileWatcher.handleFileDelete(file);
         }
       })
     );
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        if (file instanceof import_obsidian11.TFile) {
+        if (file instanceof import_obsidian12.TFile) {
           this.fileWatcher.handleFileRename(file, oldPath);
         }
       })
