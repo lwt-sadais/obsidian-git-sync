@@ -1,6 +1,6 @@
 {
   "name": "obsidian-git-sync",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Sync your Obsidian vault to a private GitHub repository for free multi-device synchronization.",
   "main": "main.js",
   "scripts": {

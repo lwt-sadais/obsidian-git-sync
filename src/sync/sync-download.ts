@@ -76,7 +76,8 @@ export class SyncDownloader {
 
                 if (action === 'keep-upload') {
                     // 保留并上传未同步文件
-                    await this.uploadUnsyncedFiles(unsyncedFiles, result);
+                    // 上传成功后将路径加入 remoteFilePaths，避免后续被删除
+                    await this.uploadUnsyncedFiles(unsyncedFiles, result, remoteFilePaths);
                 } else {
                     // 删除未同步文件
                     await this.deleteUnsyncedFiles(unsyncedFiles, result);
@@ -134,8 +135,15 @@ export class SyncDownloader {
 
     /**
      * 上传未同步文件
+     * @param files 待上传文件列表
+     * @param result 同步结果
+     * @param remoteFilePaths 远程文件路径集合（上传成功后更新）
      */
-    private async uploadUnsyncedFiles(files: TFile[], result: SyncResult): Promise<void> {
+    private async uploadUnsyncedFiles(
+        files: TFile[],
+        result: SyncResult,
+        remoteFilePaths: Set<string>
+    ): Promise<void> {
         new Notice(t('unsyncedUploading'));
 
         let successCount = 0;
@@ -145,6 +153,8 @@ export class SyncDownloader {
             const success = await this.plugin.syncEngine.uploadSingleFile(file);
             if (success) {
                 successCount++;
+                // 上传成功，将路径加入 remoteFilePaths，避免后续 deleteLocalFiles 删除
+                remoteFilePaths.add(file.path);
             } else {
                 errorCount++;
                 result.errors.push(`Failed to upload: ${file.path}`);

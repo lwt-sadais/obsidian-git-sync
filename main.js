@@ -5223,7 +5223,7 @@ var SyncDownloader = class {
           return { ...result, success: false, errors: ["Cancelled by user"] };
         }
         if (action === "keep-upload") {
-          await this.uploadUnsyncedFiles(unsyncedFiles, result);
+          await this.uploadUnsyncedFiles(unsyncedFiles, result, remoteFilePaths);
         } else {
           await this.deleteUnsyncedFiles(unsyncedFiles, result);
         }
@@ -5264,8 +5264,11 @@ var SyncDownloader = class {
   }
   /**
    * 上传未同步文件
+   * @param files 待上传文件列表
+   * @param result 同步结果
+   * @param remoteFilePaths 远程文件路径集合（上传成功后更新）
    */
-  async uploadUnsyncedFiles(files, result) {
+  async uploadUnsyncedFiles(files, result, remoteFilePaths) {
     new import_obsidian5.Notice(t("unsyncedUploading"));
     let successCount = 0;
     let errorCount = 0;
@@ -5273,6 +5276,7 @@ var SyncDownloader = class {
       const success = await this.plugin.syncEngine.uploadSingleFile(file);
       if (success) {
         successCount++;
+        remoteFilePaths.add(file.path);
       } else {
         errorCount++;
         result.errors.push(`Failed to upload: ${file.path}`);
